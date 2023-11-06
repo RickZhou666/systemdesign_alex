@@ -245,3 +245,86 @@ This is learning path for general system design from alex xu
 
 
 <br><br><br><br><br><br>
+
+
+# Chapter 2: Back-of-envelope estimation
+
+<br><br><br>
+
+## Power of two
+- 1 byte = 8bits
+- 2^10 = 1 Thousand     = 1 Kilobyte = 1 KB
+- 2^20 = 1 Million      = 1 Megabyte = 1 MB
+- 2^30 = 1 Billion      = 1 Gigabyte = 1 GB
+- 2^40 = 1 Trillion     = 1 Terabyte = 1 TB
+- 2^50 = 1 Quadrillion  = 1 Petabyte = 1 PB
+
+<br><br><br>
+
+## Latency numbers every programmer should know
+
+- By analyzing the numbers in below figure
+    1. memory is fast but the disk is slow
+    2. avoid disk seeks if possible
+    3. simple compression algorithms are fast
+    4. compress data before sending it over the internet if possible
+    5. data centers are usually in different regions, and it takes time to send data between them
+    - ![imgs](./imgs/Xnip2023-11-06_11-34-15.jpg)
+
+
+<br><br><br>
+
+## Availability numbers
+- High availability is the ability of a system to be continuously operational for a desirably long period of time.
+
+- `SLA`(service level agreement). This is an agreement between you (the service provider) and your customer, and this agreement formally defines the level of uptime your service will deliver.
+
+| Availability % | Downtime per day | Downtime per year |
+| -------------- | ---------------- | ----------------- |
+| 99%            | 14.40 mins       | 3.65 days         |
+| 99.9%          | 1.44 mins        | 8.77 hours        |
+| 99.99%         | 8.64 s           | 52.60 mins        |
+| 99.999%        | 864.00 ms        | 5.26 mins         |
+| 99.9999%       | 86.40 ms         | 31.65 s           |
+
+
+<br><br><br>
+
+## Example: Estimate Twitter QPS and storage requirements
+
+1. Assumptions
+    - 300m monthly active users
+    - 50% of users use Twitter daily
+    - Users post 2 tweets per day on average
+    - 10% of tweets contain media
+    - data is stored for 5 years
+
+2. Estimations
+    - Query per second(QPS) estimate
+        - Daily active users(DAU) = 300m * 50% = 150m
+        - Tweets QPS = 150m * 2 tweets / 24 hour / 3600 seconds = ∼3500
+        - Peek QPS = 2 * QPS = ∼7000
+    
+    - media storage estimate:
+        - Average tweet size:
+            - tweet_id  64 bytes
+            - text      140 bytes
+            - media     1 MB
+        - Media storage: 150m * 2 tweet * 10% * 1 MB = ∼30 TB per day
+        - 5-year media storage: 30 TB * 365 * 5 year = ∼55 PB
+
+    - text storage estimate:
+        - text storage: 150m * 2 tweet * 90% * 140 bytes = 37800,000,000 bytes = ∼35 GB per day
+        - 5-year media storage: 35 GB * 365 * 5 year = ∼ 62 TB
+
+<br><br><br>
+
+## Tips
+
+1. Back-of-the-envelope estimation is all about the process
+    - Rouding and Approximation. Precision is not expected.  “99987 / 9.1” >  “100,000 / 10”
+    - Write down your assumptions. for your reference later
+    - Label your units. 5MB, 5KB instead of 5
+    - Commonly asked back-of-envelope estimations. QPS, peak QPS, storage, cache, # of servers, etc.
+
+
