@@ -327,4 +327,84 @@ This is learning path for general system design from alex xu
     - Label your units. 5MB, 5KB instead of 5
     - Commonly asked back-of-envelope estimations. QPS, peak QPS, storage, cache, # of servers, etc.
 
+<br><br><br><br><br><br>
+
+# Chapter 3: A framework for system design interviews
+
+## A 4-step process for effective system design interview
+
+<br><br><br>
+
+### Step 1 - understand the problem and establish design scope
+- What specific features are we going to build? 
+- How many users does the product have?
+- How fast does the company anticipate to scale up? What are the anticipated scales in 3 months, 6 months, and a year?
+- What is the company’s technology stack? What existing services you might leverage to simplify the design?
+- what is traffic volume
+
+
+<br><br><br>
+
+### Step 2 -  Propose high-level design and get buy-in
+
+- come up with an initial blueprint for the design.
+- draw box diagrams with key components on the whiteboard or paper
+- do back-of-the-envelope calcuolations to evaluate if your blurprint fits the scale constraints
+
+<br><br><br>
+
+### Step 3 - Design deep dive
+- Agreed on the overall goals and feature scope
+- Sketched out a high-level blurprint for the overall design
+- Obtained feedback from your interviewer on the high-level design
+- Had some initial ideas about areas to focus on in deep dive based on her feedback
+
+<br><br><br>
+
+### Step 4 - Wrap up
+- the interviewer might want you to identify the system bottlenecks and discuss potential improvements
+- it could be useful to give the interviewer a recap of your design.
+- Error cases (server failure, network loss, etc)
+- Opeartion issues are worth mentioning
+- How to handle the next scale curve is also an interesting topic
+- Propose other refinements you need if you have more time
+
+
+<br><br><br>
+
+## Summarizations
+
+<br><br><br>
+
+### Dos
+- always ask for clarification
+- understand the requirements of the problem
+- there is neither the right answer nor the best answer
+- let the interviewer know what your are thinking
+- suggest multiple approaches if possible
+- once you agree with your interviewer on the blueprint, go into details on each component
+- Bounce ideas off the interviewer
+- Never give up
+
+<br><br><br>
+
+### Don'ts
+- dont be unprepared for typical interview  questions
+- dont jump into a solution without clarifying the requirements and assumptions
+- dont go into too much details on a single component in the beginning
+- if you get stuck, dont hesistate to ask for hints
+- again, communicate
+- dont think your interview is done once you give the design.
+
+<br><br><br>
+
+## Time allocation on each step
+- Step 1 Understand the problem and establish design once : 3 - 10 mins
+- Step 2 Propose high-level design and get buy-in : 10 - 15 mins
+- Step 3 Design deep dive : 10 - 25 mins
+- Step 4 Wrap : 3 - 5 mins
+
+
+
+
 
