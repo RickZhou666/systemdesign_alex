@@ -742,3 +742,103 @@ descriptors:
         - understand the limit and do not send too many requests in a short time frame
         - include code to catch exceptions or erros so your client can gracefully recover from exceptions
         - add sufficient back off time to retry logic
+
+<br><br><br><br><br><br>
+
+# Chapter 5: Design consistent hashing
+
+1. to achieve horizontal scaling, it is important to distribute requests/ data efficiently and evenly across server. consistent hashing is a commonly used technique to achieve this goal
+
+<br><br>
+
+## the rehashing problem
+1. original sever hashing 
+    - ![imgs](./imgs/Xnip2023-11-16_17-20-22.jpg)
+
+2. when server-1 goes down
+    - ![imgs](./imgs/Xnip2023-11-16_17-20-59.jpg)
+
+<br><br>
+
+## consistent hashing
+1. Consistent hashing is a special kind of hashing such that when a hash table is re-sized and consistent hashing is used, only k/n keys need to be remapped on average, where k is the number of keys, and n is the number of slots.
+
+2. in traditional hash tables, nearly all keys to be remapped
+
+
+## hash space and hash ring
+1. [SHA-1](https://en.wikipedia.org/wiki/SHA-1) is a hash function takes an input and produces a 160-bit hash value. 2^160 -> 16^40. if x0 corresponds to 0, xn corresponds to 2^160-1, and all other hash values in the middle fall between 0 and 2^160-1
+    - ![imgs](./imgs/Xnip2023-11-16_17-28-02.jpg)
+
+## hash servers
+1. using the same hash function f, we map servers based on server IP or name onto the ring.
+    - ![imgs](./imgs/Xnip2023-11-16_17-29-00.jpg)
+
+
+## hash keys
+1. 4 cache keys are hashed onto the hash ring
+    - ![imgs](./imgs/Xnip2023-11-16_17-31-02.jpg)
+
+## server lookup
+1. to determine which server a key is stored on, we go clockwise from the key position on the ring until a server is found.
+    - ![imgs](./imgs/Xnip2023-11-16_17-32-05.jpg)
+
+## add a server
+1. adding a new server will only require redistribution of a fraction of keys
+    - ![imgs](./imgs/Xnip2023-11-16_17-43-25.jpg)
+
+
+## remove a server
+1. when a server is removed, only a small fraction of keys require redistribution with consistent hashing
+    - ![imgs](./imgs/Xnip2023-11-16_17-44-01.jpg)
+
+
+## two issue in the basic approach
+1. it is impossible to keep the same size of partitions on the ring for all servers considering a server can be added or removed. if s1 is removed, s2's partition is twice as lareg as s0 and s3's partition
+    - ![imgs](./imgs/Xnip2023-11-16_17-41-11.jpg)
+
+
+<br>
+
+2. it is possible to have a non-uniform key distribution on the ring. if servers are mapped to positions listsed below, most of keys are stored on server 2
+    - ![imgs](./imgs/Xnip2023-11-16_17-42-31.jpg)
+
+3. `virtual nodes` or `replicas` is used to solve these problems
+
+
+<br><br><br>
+
+## Virutal nodes
+1. a virutal node refers to the real node, each server is represented by multiple virutal ndoes on the ring.
+    - ![imgs](./imgs/Xnip2023-11-16_17-50-53.jpg)
+
+2. to find which server a key is stored on, we go clockwise from key's location and find the first virual node encountered on the ring
+    - ![imgs](./imgs/Xnip2023-11-16_17-52-15.jpg)
+
+3. as the # of virtual nodes increased, the distribution of keys becomes more balanced. this is because the standard deviation gets smaller with more virutal nodes, leading to balanced data distribution. standard deviation measures how data spread out. there is a `tradeoff`
+    - sd will be smaller when we increase the # of virtual ndoes
+    - more spaces are needed to store data about virtual nodes
+
+## find affected keys
+1. when a server is added or removed, a fraction of data needs to be redistributed. how to find the affected range to redistribute the keys?
+
+2. when s4 added, keys between s3 ~ s4 redistributed to s4
+    - ![imgs](./imgs/Xnip2023-11-16_17-57-12.jpg)
+
+3. when s1 is removed, keys between s0 ~ s1 redistributed to s2
+    - ![imgs](./imgs/Xnip2023-11-16_17-58-31.jpg)
+    
+
+## Wrap up
+1. we had an in-depth discussion about consistent hashing, including why it is needed and how to work
+2. benefits:
+    - minimized keys are redistributed when servers are added or removed
+    - easy to scale horizontally 
+    - mitigate hotspot key problem. consistent hashing helps to mitigate the problem by distributing the data more evenly
+
+3. consistent hashing is widely used in real-world systems
+    - partitioning component of amazon's dynamo database
+    - data partitioning across the cluster in Apache Cassandra
+    - discord char application
+    - Akamai content delivery network
+    - maglev network load balancer
