@@ -1,7 +1,16 @@
 # systemdesign_alex
 This is learning path for general system design from alex xu
 
-<br><br><br>
+<br><br><br><br><br><br>
+
+# Topic to follow
+1. Amazon dynamo
+2. memcached
+3. redis
+
+
+
+<br><br><br><br><br><br>
 
 # Chapter 1: Scale from zero to millions of users
 
@@ -842,3 +851,281 @@ descriptors:
     - discord char application
     - Akamai content delivery network
     - maglev network load balancer
+
+<br><br><br><br><br><br>
+
+
+# Chapter 6: design a key-value store
+1. key-value db, is a non-relational db. each unique identifier is stored as a key with its asssociated value.
+    - key must be unique
+
+2. design a key-value store that supports 
+    - put(key, value)
+    - get(key)
+
+<br><br><br>
+
+## 6.1 Understand the problem and establish design scope
+- each design achieves a specific balance regarding the tradeoffs of the read, write and memory usage. another tradeoff was between consistency and availability. comprises of the following characteristics:
+    - the size of a key-value pair is small: less than 10KB `1 byte for a char`
+    - ability to store big data
+    - high availability: the system responds quickly, even during failures
+    - high scalability: the system can be scaled to support large data set
+    - automatic scaling: the addition/ deletion of servers should be automatic based on traffic
+    - tunable consistency
+    - low latency
+
+<br><br><br>
+
+## 6.2 Single server key-value store
+
+- intuitive approach is to store key-value pairs in a hash table, which keeps everything in memory. although memory access is fast, fitting everything in memory may be impossible due to the space constraint. `two optimizations`:
+    - data compression
+    - store only frequently used data in memory and the rest on disk
+- a signle server can reach its capacity very quickly
+
+<br><br><br>
+
+## 6.3 Distributed key-value store
+
+- aka distributed hash table, which distributes key-value pairs across many servers. important to understand `CAP` theorem
+
+### 6.3.1 CAP theorem
+
+- it's impossible for a distributed system to simultaneously provide more than two of these three gurantees: consistency, availability, and partition tolerance
+    - `consistency`: consistency means all clients see the same data at the same time no matter which node they connect to
+    - `availability`: availability means any client which requests data gets a response even if some of the nodes are down
+    - `partition tolerance`(分区容错性): a partition indicates a communication break between two nodes. partition tolerance means the system continues to operate despite network partitions
+    - CAP theorem states that one of the three properties must be sacrificed to support 2 of the 3 properties as shown below.
+    - ![imgs](./imgs/Xnip2023-12-02_09-20-36.jpg)
+
+### 6.3.2 CP (conistency and partition tolerance) systems
+- a CP key-value store supports consitency and paritition tolerance whilce scrificing availiability
+
+### 6.3.3 AP (availability and partition tolerance) systems
+    
+- a AP key-value store supports availability and paritition tolerance whilce scrificing consistency
+
+### 6.3.4 CA (consistency and availability) systems
+    
+- a AC key-value store supports consitency and availability whilce scrificing partition tolerance. since network failure is unavoidable, a distributed system must tolerate network partition. thus a CA system `cannot exist` in real-world application
+
+### 6.3.5 Ideal situation
+- in the ideal world, network partition never occurs, data written to n1 is automatically replicated to n2 and n3. both consistency and availability are achieved
+    - ![imgs](./imgs/Xnip2023-12-02_09-27-23.jpg)
+
+### 6.3.6 Real-world distributed systems
+- in a ditributed system, partitions cannot be avoided, when a partition occurs, we must choose between consistency and availability. below n3 goes down and cannot communicate with n1 and n2. if clients write data to n1 or n2, data cannot be propagated to n3. if data is written to n3 but not propagated to n1 and n2 yet, n1 and n2 would have stale data.
+    - ![imgs](./imgs/Xnip2023-12-02_09-31-33.jpg)
+
+<br><br>
+
+- if we choose (CP system), we must block all write operations to n1 and n2 to avoid data inconsistency among these thre servers, which makes the system unavailable.
+    - Bank system have extremely high consistent requirements. return an error before the inconsistency is resolved
+- if we choose (AP system), keeps accepting reads, even though it might return stale data. for writes, n1 and n2 will keep accepting writes and data will be synced to n3 when the network partition is resolved.
+
+<br><br><br>
+
+## 6.4 System components
+- discuss below components and techniques to build a key-value store
+    - data partition
+    - data replication
+    - consistency
+    - inconsistency resolution
+    - handling falures 
+    - system architecture diagram
+    - write path
+    - read path
+
+<br><br>
+
+### 6.4.1 Data partition
+- for large applications, it is infeasible to fit the complete data set in a single server. `split the data into smaller partitions and store them in multiple servers`, two challenges:
+    - distribute data acros multiple servers evenly
+    - minimize data movement when nodes are added or removed
+
+- `consistent hashing` is a great technique to solve these problems
+    - 1st, servers are placed on hash ring
+    - next, a key is hashed onto the same ring, and it is stored on the first server encountered while moving the clockwise direction. key0 is stored in s1 using this logic
+        - ![imgs](./imgs/Xnip2023-12-02_09-38-37.jpg)
+
+- two advantages:
+    - `automatic scaling`: servers could be added and removed automatically depending on the load
+    - `heterogeneity`: the # of virtual nodes for a server is proportional to the server capacity. e.g. servers qith higher capacity are asigned with more virtual nodes
+
+<br><br>
+
+
+### 6.4.2 data replication
+- to achieve high availability and reliability, data must be replicated asynchronously over N servers, where N is a configurable parameter. 
+    - after a key is mapped to a position on the has ring, walk clockwise from that position and choose the first N servers on the ring to store data copies. e.g. N=3, key0 is replicated at s1, s2 and s3
+        - ![imgs](./imgs/Xnip2023-12-02_10-51-07.jpg)
+
+- with virtual nodes, the first N nodes on the ring may be owned by fewer than N physical servers, to avoid this issue, we only choose unique servers while performing the clockwise walk logic
+
+- nodes in same data center often fail at the same time due to power outages, network issues, natural disasters, etc. for better reliability, replicas are placed in distinct data centers, and data centers are connected through high-speed networks.
+
+<br><br>
+
+### 6.4.3 consistency
+
+- since data is replicated at multiple nodes, it must be synchronized acros replicas. Quorum consensus can guarantee consistency for both read and write operations
+    - N - # of the replicas
+    - W - A write quorum of size W
+    - R - A read quorum of size R
+    - e.g. of N = 3
+        - ![imgs](./imgs/Xnip2023-12-02_11-09-41.jpg)
+        
+
+- W = 1 doest not mean data is written on one server, e.g. data is replicated at s0, s1 and s2, W = 1 means that coordinator must receive at least one ack before the write operations is consider successful.
+- if W = 1 or R = 1, an operation is returned quickly because a coordinator only needs to wait for a one response from any of the replicas.
+- if W or R > 1, the system offers bettern consistency, but query will be slower as coordinator must wait for the responses from the slowest replica.
+if W + R > N, strong consistency is guarenteed because there must be at least one overlapping node that has the latest data to ensure consistency.
+
+- How to configure N, W and R?
+    - R = 1 and W = N, the system is optimized for a fast read
+    - W = 1 and R = N, the system is optimized for a fast write
+    - W + R > N, strong consistency is guaranteed( N = 3, W = R = 2)
+    - W + R <= N, strong consistency is `not` guaranteed
+
+#### 6.4.3.1 consistency models
+- consistency model defines the degree of data consistency
+    - strong consistency: any read operation retuns a value corresponding to the result of thre most updated write data item. a client never sees out-of-date data
+    - weak consistency: subsequent read operations may not see the most updated value
+    - eventual consistency： this is a specific form of weak consistency. given enough time, all updated are propagated, and all replicas are consistent
+
+- strong consistency forcing a replica not to accept new reads/ writes until every replica has agreed on current write. not ideal for highly avaiable systems as it block new operations
+- Dynamo and cassandra adopt eventual consistency. from concurrent writes, eventual consistency allows inconsistent values to enter the system and force the client to read the values to reconcile
+
+<br><br>
+
+### 6.4.4 inconsistency resolution: versioning
+- Replication gives high availability but causes inconsistencies among replicas. Versioning and vector locks are used to solve inconsistency problems. 
+
+- a vector clock is common technique to solve this problem
+    - increment vi if [Si, vi] exists
+    - otherwise create a new entry [Si, 1]
+    - ![imgs](./imgs/Xnip2023-12-02_11-49-44.jpg)
+
+- two notable downsides of vector clock:
+    - 1st vector clocks add complexity to the client because it needs to implement conflict resolution logic
+    - 2nd the pairs in the vector clock could grow rapidly. to fix this, we set a threshold for the length, and if it exceeds the limit, the oldest pairs are removed. this can lead to inefficiencies in reconciliation, but Dynamo amazon has not yet encountered this problem in production.
+
+<br><br>
+
+### 6.4.5 handling failures
+
+#### 6.4.5.1 failure detection
+- it is insufficient to believe a server is down because another server says so. requires at least two independent sources of information to mark a server down.
+- straightfoward solution is multicasting but it's inefficient
+    - ![imgs](./imgs/Xnip2023-12-02_12-01-17.jpg)
+
+<br>
+
+- use decentralized failure detection methods like gossip protocol. work as follows:
+    - each node maintains a node membership list, which contains memeber IDs and heartbeat counters
+    - each node periodically increments its heartbeat counter
+    - each ndoe periodically sends heartbeats to a set of random nodes, which in turn propagate to another set of nodes
+    - once nodes receive heartbeats, membership list is updated to the latest info
+    - if the heartbeat has not increased for more than predefined periods, the member is considered as offline.
+
+- node s0 maintains a node membership list shown on the left side
+- node s0 notices that node s2's (member ID = 2) heartbeat counter has not increased for a long time
+- node s0 sends heartbeats that include s2's info to a set of random nodes. once other nodes confirm that s2's heartbeat counter has not been updated for a long time, node s2 is marked down, and this information is propagated to other ndoes.
+        - ![imgs](./imgs/Xnip2023-12-02_12-05-37.jpg)
+
+
+<br><br>
+
+#### 6.4.5.2 handling temporary failures 
+- in strict quorum approach, read and write operations could be blocked
+- `sloppy quorum` is used to imporve availability. the system chooses the first W healthy servers for writes and first R healthy servers for reads on the hash ring. 
+- if a server is unavailable due to network or server failures, another server will process requests temporarily. when the down server is up, changes will be pushed back to achieve data consistency. it's called `hinted handoff`
+    - ![imgs](./imgs/Xnip2023-12-02_12-12-05.jpg)
+
+<br><br>
+
+#### 6.4.5.3 handling permanent failures 
+- implement `anti-entropy protocol` to keep replicas in sync. it involves comparing each piece of data on replicas and updating each replica to the newest version
+- step 1 divide kep space into buckets
+    - ![imgs](./imgs/Xnip2023-12-02_12-23-34.jpg)
+
+- step 2 hash each key in a bucket using a uniform hashing method
+    - ![imgs](./imgs/Xnip2023-12-02_12-23-44.jpg)
+
+- step 3 create a single hash node per bucket
+    - ![imgs](./imgs/Xnip2023-12-02_12-23-54.jpg)
+
+- step 4 build the tree upwards till root by calculating hashes of children 
+    - ![imgs](./imgs/Xnip2023-12-02_12-24-05.jpg)
+
+- to compare two merkle tree, start by comparing the root hashes. if root hashes match, both servers have the same data. if root hashes disagree, then left child hashes are compared followed by right child hashes. you can traverse the tree to find which buckets are not synchronized and synchronize hose buckets only
+
+- in real world, a possible configuration is one million buckets per one billion keys, so each bucket only contains 1000 keys
+
+
+<br><br>
+
+#### 6.4.5.4 handling data center outage
+- to buidl a system capable of handling data center outage, it is important to replicate data across multiple data centers. even if a data center is completely offline, users can still access through the other data centers.
+
+<br><br><br>
+
+### 6.4.6 System architecture diagram
+- main features of the architecture:
+    - clients communicate with key-value store through simple APIs: get(key) and put(key, value)
+    - a coordinator is a node that acts as a proxy between the client and the key-value store
+    - nodes are distributed on a ring using consistent hashing
+    - the system is completely decentralized so adding and moving nodes can be automatic
+    - data is replicated at multiple nodes
+    - there is no single point of failure as every node has the same set of responsibiliteis
+
+    - ![imgs](./imgs/Xnip2023-12-02_12-28-06.jpg)
+
+- as the design is decentralized, each ndoe performs many tasks as presented below:
+    - ![imgs](./imgs/Xnip2023-12-02_12-30-31.jpg)
+
+<br><br><br>
+
+### 6.4.7 Write path
+- when a write request is directed to a specific node
+    1. the write request is persisted on a commit log file
+    2. data is saved in the memory cache
+    3. when the memory cache is full or reaches a predefined threshold, data is flushed to SSTable on disk. A sorted-string table(SSTable) is a sorted list of <key, value> pairs
+    - ![imgs](./imgs/Xnip2023-12-02_12-34-47.jpg)
+
+
+
+<br><br><br>
+
+### 6.4.8 Read path
+- after a read request is directed to a specific node, it first checks if data is in the memory cache. if so, the data is returned to the client below
+    - ![imgs](./imgs/Xnip2023-12-02_12-37-10.jpg)
+
+- if data not in memory, it will be retrieved from the disk instead. `bloom filter` is efficient way to find out key from SSTable
+    1. the system first checks if data in memory
+    2. if not, the system checks the bloom filter
+    3. the bloom filter is used to figure out which SSTables might contain the key
+    4. SSTables return the result of the data set
+    5. the result of the data set is returned to the client
+        - ![imgs](./imgs/Xnip2023-12-02_12-38-35.jpg)
+
+<br><br><br>
+
+## 6.5 Summary
+
+| Goal/ Problems              | Technique                                                |
+| --------------------------- | -------------------------------------------------------- |
+| Ability to store big data   | Use consistent hashing to spread the load across servers |
+| High availability reads     | Data replication multi-data center setup                 |
+| High availability writes    | versioning and conflict resolution with vector clocks    |
+| dataset partition           | consistent hashing                                       |
+| incremental scalability     | consistent hashing                                       |
+| Heterogeneity               | consistent hashing                                       |
+| Tunable consistency         | quorum consensus                                         |
+| Handling temporary failures | Sloppy quorum and hinted handoff                         |
+| Handling permanent failures | merkle tree                                              |
+| Handling data center outage | cross-data center replication                            |
+
+
+
