@@ -1238,6 +1238,7 @@ i:  the system should be able to generate 10,000 IDs per second -> 50,000,000 ye
         - 2^41 - 1 = 2199023255551 milliseconds(ms), ~ 69 years =  2199023255551 ms / 1000 seconds / 365 days / 24 hours / 3600 seconds
         - this means the ID generator will work for 69 years and having a custom epoch time. after that, we need a new epoch time or adopt other techniques to migrate IDs
     - ![imgs](./imgs/Xnip2023-12-03_11-13-56.jpg)
+    
 
 ### 3.2 sequence number
 - sequence number is 12 bits, which give us 2^12 = 4096 combinations. this field is 0 unless more than one ID is generated in a millisecond on the same server. in theory, a machine can support a maximum of 4096 new IDs per milliseconds
@@ -1251,3 +1252,195 @@ i:  the system should be able to generate 10,000 IDs per second -> 50,000,000 ye
     - section length tuning. fewer sequence numbers but more timestamp bits are effective for low concurrency and long-term application
     - high availability. since ID generator is a mission-critical system, it must be highly available!
 
+<br><br><br><br><br><br>
+
+# Chapter 8: design a URL shortener
+- design a URL shortening service like tinyurl
+
+## Step 1 - understand the problem and establish design scope
+
+```bash
+c:  can you give an example of how a URL shortener work?
+i:  assume URL below is the original URL
+    https://www.systeminterview.com/q=chatsystem&c=loggedin&v=v3&l=long
+    you creates an alias with shorter length: https://tinyurl.com/y7keocwj. it you click the alias, it redirects you to the original URL
+
+c:  what is the traffic volume?
+i:  100 million URLs are generated per day
+
+c:  how long is the shortened URL?
+i:  as short as possible
+
+c:  what characters are allowed in the shortened URL?
+i:  can be combination of numbers(0-9) and characters(a-z, A-Z)
+
+c:  can shortened URLs be deleted or updated?
+i:  for simplicity, let us assume shortened URLs cannot be deleted or updated
+```
+
+- here are basic use cases:
+    1. URL shortening:  given a long URL => return a much shorter URL
+    1. URL redirecting: given a shorter URL => redirect to the original URL
+    1. high availability, scalability, and fault tolerance considerations
+
+
+### 1.1 back of envelope estimation
+1. write operation: 100 million URLs are generated per day `1158` per seconds
+2. write operation per second: 100 million/ 24 / 3600 = ~ 1160
+3. read operation: assuming ratio of read operation to write operation is 10:1, read operation per second: 1160 * 10 = 11,600
+4. assuming the URL shortener service will run for 10 years, this means we must support 100 million * 365 * 10 = 365 billion records
+5. assume average URL length is 100
+6. storage requirement over 10 years: 365 billion * 100 bytes * 10 years = ~ 365 TB
+
+- `it is important for you to walk through the assumptions and calculations with your interviewer so that both of you are on the same page`
+
+<br><br><br>
+
+## Step 2 - propose high-level design and get buy-in
+- we discuss the API endpoints, URL redirecting, and URL shortening flows
+
+<br>
+
+### 2.1 API endpoints
+- API endpoint facilitate the communication between clients and servers
+    1. URL shortening. to create a new short URL, a client sends a POST request, which contains one parameter: the original long URL.
+    ```bash
+    POST api/v1/data/shorten
+        - request paremeter: {longUrl: longURLString}
+        - return shortURL
+    ```
+
+    2. URL redirecting. a client sends a GET request.
+    ```bash
+    GET api/v1/shortUrl
+        - Return longURL for HTTP redirection
+    ```
+<br>
+
+### 2.2 URL redirecting
+- once server receives a tinyurl request, it 301 redirect
+    - ![imgs](./imgs/Xnip2023-12-03_14-03-55.jpg)
+- detailed communication
+    - ![imgs](./imgs/Xnip2023-12-03_14-04-27.jpg)
+
+<br>
+
+#### 2.2.1 301 redirect
+- 301 requested URL is `permanently` moved to the long URL. browser caches the response and subsequent requests will not be sent to the URL shortening service.
+- this can reduce the server load
+
+
+#### 2.2.2 302 redirect
+- 301 requested URL is `temporarily` moved to the long URL. subsequent requests will be sent to the URL shortening service. then redirect to the long URL server. 
+- this is good for analytics, track click rate and source of the click more easily
+ 
+#### 2.2.3 implementaion
+- use hash tables, <shortURL, longURL> pairs
+    - get longURL: longURL = hashTable.get(shortURL)
+    - once you get the longURL, perform the URL redirect
+
+
+<br>
+
+### 2.3 URL shortening
+- find a hash function f(x) to mapp a long URL to the hashValue
+    - ![imgs](./imgs/Xnip2023-12-03_14-12-20.jpg)
+    
+- satisfy following requirements:
+    - each longURL must be hashed to one hashValue
+    - each hashValue can be mapped back to the longURL
+
+
+<br><br><br>
+
+## Step 3 - Design deep dive
+- dive deep into:
+    - data model
+    - hash function
+    - URL shortening
+    - URL redirecting
+
+<br>
+
+### 3.1 Data model
+
+- in high-level design, everything is stored in a hashtable. in real-world memory resources are limited and expensive. store <shortURL, longURL> mapping in a relational database. id, shortURL, longURL
+    - ![imgs](./imgs/Xnip2023-12-03_14-17-09.jpg)
+
+
+<br>
+
+### 3.2 Hash function
+- hash a long URL to a short URL, aka hashValue
+
+#### 3.2.1 hash value length
+- characters from [0-9,a-z,A-Z] -> 10 + 26 + 26 = 62 possible characters
+    - find the smallest n such that 62^n > 365 billion records
+    - ![imgs](./imgs/Xnip2023-12-03_14-21-01.jpg)
+- when n = 7, 62^n= ~3.5 trillion, more enough for 365 billion URLs, so the hashValue is 7
+
+
+#### 3.2.2 hash + collision 
+- use hash function like CRC32, MD5, SHA-1 after applying for URL: 
+    - https://en.wikipedia.org/wiki/Systems_design
+    - ![imgs](./imgs/Xnip2023-12-03_14-25-34.jpg)
+- but even the shortest hash value is too long (more than 7 characters)
+    - collect first 7 characters, this might lead to hash collisions. we can recursively append a new predefined string until no more collision is discovered
+    - ![imgs](./imgs/Xnip2023-12-03_14-27-52.jpg)
+
+- it can eliminate collision, but expensive to query the db. a technique called bloom filters can imporve performance. a bloom filter is a space-efficient probabilistic technique to test if an element is a member of a set
+
+#### 3.2.3 base 62 conversion
+- use 62 possible characters for hashValue.
+    - 11157<sub>10</sub>, 0-0, ..., 9-9, ..., 10-a, 11-b, 35-z, 36-A, ..., 61-Z
+    - 11157<sub>10</sub>, 2*62<sup>2</sup> + 55 x 62<sup>1</sup> + 59 x 62<sup>0</sup> = [2, 55, 59] -> [2,T,X] in base 62
+        - ![imgs](./imgs/Xnip2023-12-03_14-41-45.jpg)
+    - thus short URL is https://tinyurl.com/2TX
+
+<br>
+
+#### 3.2.4 comparision of the two approaches
+- ![imgs](./imgs/Xnip2023-12-03_14-43-38.jpg)
+
+<br><br>
+
+### 3.3 URL shortening deep dive
+- we want the URL shortening flow to be logically simple and functional. we choose base 62 conversion
+    1. longURL is the input
+    2. the system checks if the longURL is in the db
+    3. if it is, fetch the shortURL from db and return it to the client
+    4. if not, the longURL is new. a new unique ID is generated by ID generator
+    5. convert the ID to shortURL with base 62 conversion
+    6. create a new database row with ID, shortURL and longURL
+        - ![imgs](./imgs/Xnip2023-12-03_14-45-24.jpg)
+
+- example
+    1. assuming input longURL is: https://en.wikipedia.org/wiki/Systems_design
+    2. unique ID generator returns ID: 2009215674938.
+    3. convert ID to shortURL using the base 62 conversion: `zn9edcu`
+    4. save ID, shortURL, and longURL 
+        - ![imgs](./imgs/Xnip2023-12-03_15-05-29.jpg)
+
+<br><br>
+
+### 3.4 URL redirecting deep dive
+- as there are more reads than writes <shortURL, longURL> mapping is stored in a cache to improve performance
+    1. a uer click a short URL link:
+    2. the load balancer forwards the request to web servers
+    3. if a shortURL is already in the cache, return the longURL directly
+    4. if a shortURL is not in the cache, fetch the longURL from the db, if it is not in the db, it is likely a user entered an invalid shortURL
+    5. the longURL is returned to the user
+        - ![imgs](./imgs/Xnip2023-12-03_15-10-58.jpg)
+
+
+
+<br><br><br>
+
+## Step 4 - Wrap up
+- discuss about API design, data model, hash function, URL shortening and URL redirecting
+- additional taliing points:
+    1. rate limiter: malicious users send an overwhelmingly large number of URL shortening requests. filter out based on IP address or other filtering rules
+    2. web server scaling: since the web tier is stateless, it's easy to scale the web tier by adding or removing web servers
+    3. database scaling: db replication and sharding are common techniques
+    4. analytics: data is increasingly important for business success. how many people click on a link, when do they click the link?
+    5. availability, consistency, and reliability. chapter 1.
