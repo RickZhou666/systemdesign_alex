@@ -1109,6 +1109,7 @@ if W + R > N, strong consistency is guarenteed because there must be at least on
     4. SSTables return the result of the data set
     5. the result of the data set is returned to the client
         - ![imgs](./imgs/Xnip2023-12-02_12-38-35.jpg)
+        
 
 <br><br><br>
 
@@ -1128,4 +1129,125 @@ if W + R > N, strong consistency is guarenteed because there must be at least on
 | Handling data center outage | cross-data center replication                            |
 
 
+<br><br><br><br><br><br>
+
+# Chapter 7: Design a unique ID generator in distributed systems
+- auto_increment does not work in a distributed environment. a single database server is not large enouh and generating unique IDs across multiple dbs with minimal delay is challengin
+
+<br><br><br>
+
+## Step 1 - understand the problem and establish design scope
+
+```bash
+c:  what are the characteristic of unique IDs?
+i:  IDs must be unique and sortable
+
+c:  for each new record, does ID increment by 1
+i:  the ID increments by time but not necesssarily only increments by 1. IDs created in the evening are larger than created in the morning on the same day
+
+c:  Do IDs only contain numerical values?
+i:  Yes, that is correct
+
+c:  What is the ID length requirement?
+i:  IDs should fit into 64-bit
+
+c:  what is the scale of the system?
+i:  the system should be able to generate 10,000 IDs per second -> 50,000,000 years
+
+```
+- understand the requirements and clarify ambiguities:
+    - IDs must be unique
+    - IDs are numerical values only
+    - IDs fit into 64-bit
+    - IDs are ordered by date
+    - Ability to generate over 10,000 unique IDs per second
+
+<br><br><br>
+
+
+## Step 2 - Propose high-level design and get but-in
+- options to generate unique IDs in distributed systems
+    - multi-master replication
+    - universally unique identifier (UUID)
+    - ticket server
+    - twitter snowflake approach
+
+<br>
+
+### 2.1 multi-master replication
+
+- this approach use dbs' auto_increment feature. instead of increasing the next ID by 1, we increase it by k, where k is the number of db servers in use. As below example, next ID = prev ID + 2. but some major drawbacks:
+    - hard to scale with multiple data centers
+    - IDs do not go up with time acros multiple servers
+    - it does not scale well when a server is added or removed 
+    - ![imgs](./imgs/Xnip2023-12-03_10-53-53.jpg)
+
+<br>
+
+### 2.2 UUID
+- UUID is a 128-bit number used to identify information in computer systems. UUID has a very low probability of getting collision. quoted from wiki, "after generating 1 billion UUIDs every second for approximately 100 years would be the probability of creating a single duplicate reach 50%"
+
+- UUIDs can be generated independently without coordination between servers
+
+- Pros
+    - generating UUID is simple, no coordination between servers is required
+    - the system is easy to scale because each web server is responsible for generating IDs they consume
+- Cons
+    - IDs are 128 bit long, our requirement is 64 bits
+    - IDs do not go up with time
+    - IDs could be non-numeric
+
+    - ![imgs](./imgs/Xnip2023-12-03_10-53-39.jpg)
+    
+    
+<br>
+
+### 2.3 Ticket server
+- to use a centralized auto_increment feature in a single database server
+- Pros
+    - numeric IDs
+    - it is easy to implement, works for small to medium-scale applications
+- Cons
+    - single point of failure. if ticket server goes down, all system will face issues. we can set up multiple ticket servers but it is hard to keep them in sync.
+- ![imgs](./imgs/Xnip2023-12-03_11-08-15.jpg)
+
+<br>
+
+### 2.4 Twitter snowflake approach
+
+
+- divide and conquer. diver ID into different seconds
+    - sign bit: 1 bit
+    - timestamp: 41 bits. 1288834974657 in milliseconds
+    - data center ID: 5bits, 2^5 = 32 datacenters
+    - machine ID: 5 bits, 2^5 = 32 machines per datacenter
+    - sequence number: 12 bits. for every ID generated on that machine/ process, the sequence number is incremented by 1, the number is reset to 0 every `milliseconds`
+    - ![imgs](./imgs/Xnip2023-12-03_11-08-01.jpg)
+    
+
+<br><br><br>
+
+## Step 3 - Design deep dive
+
+- datacenter IDs and machine IDs are chosen at the startup time. any changes in dc IDs and machine IDs require careful review since an accidental change in those values can lead to ID conflicts
+
+### 3.1 timestamp
+
+- as timestamps grow with time, IDs are sorted by time
+    - the maximum timestamp that can be represented in 41 bits is
+        - 2^41 - 1 = 2199023255551 milliseconds(ms), ~ 69 years =  2199023255551 ms / 1000 seconds / 365 days / 24 hours / 3600 seconds
+        - this means the ID generator will work for 69 years and having a custom epoch time. after that, we need a new epoch time or adopt other techniques to migrate IDs
+    - ![imgs](./imgs/Xnip2023-12-03_11-13-56.jpg)
+
+### 3.2 sequence number
+- sequence number is 12 bits, which give us 2^12 = 4096 combinations. this field is 0 unless more than one ID is generated in a millisecond on the same server. in theory, a machine can support a maximum of 4096 new IDs per milliseconds
+
+<br><br><br>
+
+## Step 4 - Wrap up
+- we settle on snowflake as it supports all our use cases and is scalable in a distributed environment
+- additional taling points:
+    - clock synchronization. `network time protocol` is most popular soltuion. multiple data center or multiple machine scenarios might dont have same clock
+    - section length tuning. fewer sequence numbers but more timestamp bits are effective for low concurrency and long-term application
+    - high availability. since ID generator is a mission-critical system, it must be highly available!
 
