@@ -1732,6 +1732,7 @@ i:  pages with duplicate content should be ignored
     - PNG downloader module is plugged-in to download PNG files
     - web monitor module is added to monitor the web and prevent copyright and trademark infringments
     - ![imgs](./imgs/Xnip2023-12-03_17-39-20.jpg)
+    
 
 
 <br><br>
@@ -1766,3 +1767,279 @@ i:  pages with duplicate content should be ignored
     - horizontal scaling: large scale crawler, keep servers stateless
     - availability, consistency and reliability: chapter 1
     - analytics: collecting and analyzing data are important
+
+<br><br><br><br><br><br>
+
+# Chapter 10 - design a notification system
+
+- three types:
+    - mobile push notifications
+    - SMS msg
+    - email
+
+<br><br><br>
+
+## Step 1 - understand the problem and establish design scope
+
+- building a scalable system that sends out millions of notifications a day is not an easy task.
+```bash
+c:  what type of notifications does the system support?
+i:  push notification, SMS msg and email
+
+c:  is it real-time system?
+i:  a soft real-time system. we want user to receive notification as soon as possible. if system is under a high workload, a slight delay is acceptable
+
+c:  what are the supported devices?
+i:  IOS, andriod, laptop/ desktop
+
+c:  what triggers notifications?
+i:  can be triggered client applications, also be scheduled on the server-side
+
+c:  will useres be able to opt-out?
+i:  yes, users who choose to opt-out will no longer receive notifications
+
+c:  how many notifications are sent out each day?
+i:  10 million mobile push notifications, 1 million SMS msg, and 5 million emails
+
+```
+
+<br><br><br>
+
+## Step 2 - propose high-level design and get buy-in
+- structured as follows:
+    - differnt types of notification
+    - contact info gathering flow
+    - notification sending/ receiving flow
+
+<br><br>
+
+### 2.1 differnt types of notifications
+
+#### 2.2.1 IOS push notification
+
+- three components to send an IOS push notification
+    - ![imgs](./imgs/Xnip2023-12-03_18-09-22.jpg)
+    - provider: provider builds and sends notification requests to Apple Push Notification Service(APNs)
+        - device token: unique identifier used for sending push notifications
+        - payload: JSON
+            - ![imgs](./imgs/Xnip2023-12-03_18-09-03.jpg)
+    - APNs: remote serive provided by Apple
+    - IOS device: end client to receives the push notifications
+
+<br>
+
+#### 2.2.2 Android push notification
+- FCM (firebase Cloud Messaging) is commonly used to send push notifications to android devices
+    - ![imgs](./imgs/Xnip2023-12-03_18-11-40.jpg)
+
+<br>
+
+#### 2.2.3 SMS msg
+- 3rd SMS service like Twilio, Nexmo and others are commonly used. commercial services
+    - ![imgs](./imgs/Xnip2023-12-03_18-12-13.jpg)
+
+<br>
+
+#### 2.2.4 Email
+- although companise can setup their own email servers, many of them opt for commercial email service. Sendgrid and Mailchimp
+    - ![imgs](./imgs/Xnip2023-12-03_18-13-05.jpg)
+
+#### 2.2.5 to implement all types
+- ![imgs](./imgs/Xnip2023-12-03_18-13-27.jpg)
+
+<br><br>
+
+### 2.2 contact info gathering flow
+- when user signup, it will collects user contact info and store it in the database
+    - ![imgs](./imgs/Xnip2023-12-03_18-14-28.jpg)
+- user can have multiple devices
+    - ![imgs](./imgs/Xnip2023-12-03_18-14-59.jpg)
+
+
+
+<br><br>
+
+### 2.3 notification sending/ receiving flow
+
+
+
+<br>
+
+#### 2.3.1 high-level design
+- design
+    - ![imgs](./imgs/Xnip2023-12-03_18-17-49.jpg)
+
+##### 2.3.1.1 service 1 to N
+- micro-service or cron job or a distributed system that triggers notification sending events
+
+##### 2.3.1.2 notification system
+- provides APIs for services 1 to N, and builds notification payloads for 3rd services
+
+##### 2.3.1.3 3rd services
+- responsible for delivering notifications
+- pay attension to extensibility. FCM is unavailable in China, so alternative 3rd services such as Jpush, PushY
+
+##### 2.3.1.4 iOS, Android, SMS, email
+- users receive notification on their devices
+
+#### 3 problems in this design
+- SPOF (single point of failure)
+- hard to scale: the notification system handles everything. it is challenging to scale databases, caches and different notification processing components independently
+- performance bottlenect: processing and sending notification can be resource intensive. 
+
+
+<br>
+
+#### 2.3.2 high-level design (improved)
+- improve design below:
+    - move the db and cache out of the notification server
+    - add more notification servers and setup automatic horizontal scaling
+    - introduce msg queues to decouple the system components
+- ![imgs](./imgs/Xnip2023-12-03_18-24-26.jpg)
+
+
+##### 2.3.2.1 service 1 to N
+- differnt services that send notifications via APIs provided by notification servers
+
+##### 2.3.2.2 notification servers
+- functionalities:
+    - provide APIs for services to send notifications
+    - carry out basic validations to verify emails
+    - query the db or cache to fetch data needed to render a notification
+    - put notification data to msg queues for parallel processing
+- example to send an email
+    - ![imgs](./imgs/Xnip2023-12-03_18-28-06.jpg)
+    
+
+##### 2.3.2.3 cache
+- user info, device info, notification templates are cached
+
+##### 2.3.2.4 db
+- stores data about user, notification, settings, etc
+
+
+##### 2.3.2.5 msg queues
+- remove dependencies between components, msgs queues serve as buffers when high volumes of notifications are to be sent out, each type is assigned with a distinct msg queue so an outage in one 3rd service will not affect other notification types
+
+
+##### 2.3.2.7 workers
+- a list of servers that pull notification events from msg queues and send them to the corresponding 3rd services
+
+##### 2.3.2.8 3rd services
+- send notifications to users
+
+##### 2.3.2.9 iOS, Android, SMS, Email
+- receive push notifications
+
+<br>
+
+#### 2.3.3 how every component work together
+1. service calls APIs provided by notification servers to send a notification
+2. notification servers fetch metadata such as user info, device token, and notification setting from the cache or database
+3. a notification event is sent to the corresponding queue for processing
+4. workers pull notification events from msg queues
+5. workers send notification to 3rd 
+6. 3rd send notification to user devices
+
+
+
+<br><br><br>
+
+## Step 3 - design deep dive
+- deep dive following:
+    - reliability
+    - additional component and considerations
+        - notification template
+        - notification settings
+        - rate limiting
+        - retry mechanism
+        - security in push notifications
+        - monitor queued notifications
+        - event tracking
+        
+    - updated design
+
+<br>
+
+### 3.1 Reliability
+
+#### 3.1.1 how to prevent data loss?
+- it cannot lose data
+- a notification log database is included for data persistence
+    - ![imgs](./imgs/Xnip2023-12-03_18-35-19.jpg)
+    
+
+
+#### 3.1.2 will recipients receive a notification exactly once?
+- short answer is no. distributed nature could result in duplicate notifications. we introduce a dedupe mechanism and handle each failure case carefully
+- check event ID
+    - seen, discard
+    - nope, send out
+
+
+<br>
+
+### 3.2 additional component and considerations
+
+#### 3.2.1 notification template
+- notification template is preformated notification to create your unique notification by customizing parameters, styling and tracking links
+    - maintaining a consistent format
+    - reducing margin error
+    - saving time
+```bash
+BODY:
+You dreamed of it. We dared it. [ITEM NAME] is back -- only until [DATE].
+CTA:
+Order Now. Or, Save My [ITEM NAME]
+```
+
+#### 3.2.2 notification setting
+- before sent to user, we first check if a user is opted-in 
+```bash
+user_id bigInt
+channel varchar     # push notification, email or SMS
+opt_in  boolean     # opt-in to receive notification
+
+```
+
+#### 3.2.3 rate limiting
+- to avoid overwhelming users with too many notifications. limit # of notifications a user can receive
+
+#### 3.2.4 retry mechanism
+
+- if 3rd fails to send, notification will be added to the msg queue for retrying
+
+#### 3.2.5 security in push notifications
+
+- appKey and appSecret are used to secure push notification APIs
+- only authenticated or verified clients are allowed to send 
+
+#### 3.2.6 monitor queued notifications
+- if # is too large, events are not processed fast enough by workers
+- more workers are needed
+    - ![imgs](./imgs/Xnip2023-12-03_18-44-13.jpg)
+
+#### 3.2.7 events tracking
+- notification metrics. open rate, click rate and engagment are important
+- integrate notification system and the analytics service is usually required
+    - ![imgs](./imgs/Xnip2023-12-03_18-45-12.jpg)
+
+
+<br>
+
+### 3.3 Updated design
+- updated design
+    - ![imgs](./imgs/Xnip2023-12-03_18-45-41.jpg)
+
+- many new components added
+    1. the notification servers are equipped with two more critical features:
+        - authentication
+        - rate-limiting
+    2. retry mechanism to handle notification failure
+    3. notification template provide a consistent and efficient notification
+    4. monitoring and tracking system are added for system health checks and future improvements
+
+
+<br><br><br>
+
+## Step 4 - wrap up
