@@ -1431,6 +1431,7 @@ i:  for simplicity, let us assume shortened URLs cannot be deleted or updated
     4. if a shortURL is not in the cache, fetch the longURL from the db, if it is not in the db, it is likely a user entered an invalid shortURL
     5. the longURL is returned to the user
         - ![imgs](./imgs/Xnip2023-12-03_15-10-58.jpg)
+        
 
 
 
@@ -1444,3 +1445,324 @@ i:  for simplicity, let us assume shortened URLs cannot be deleted or updated
     3. database scaling: db replication and sharding are common techniques
     4. analytics: data is increasingly important for business success. how many people click on a link, when do they click the link?
     5. availability, consistency, and reliability. chapter 1.
+
+
+<br><br><br><br><br><br>
+
+# Chapter 9 - design a web crawler
+- it is widely used by search engines to discover new or updated content on the web. content can be a web page, an image a video a pdf file
+    - collect a few web pages then follows links on those pages
+    - ![imgs](./imgs/Xnip2023-12-03_15-46-51.jpg)
+    
+- crawler purposes:
+    - search engine indexing: create a local index for search engines, googlebot
+    - web archiving: collecting information from the web to preserve data for future uses
+    - web mining: data mining, discover useful knowledge from the internet
+    - web monitoring: monitor copyright and trademark infringements over the internext
+
+
+<br><br><br>
+
+## Step 1 - understand the problem and establish design scope
+- the basic algorithm of a web crawler:
+    1. given a set of URLs, download all the web pages addressed by the URLs
+    2. extract URLs from these web pages
+    3. add new URLs to the list of URLs to be downloaded, repeat these 3 steps
+
+- questions
+```bash
+c:  what is the main purpose of the crawler? is it for search engine indexing, data mining or something else?
+i:  search engine indexing
+
+c:  how many web pages does the web crawler collect per month?
+i:  1 billion pages
+
+c:  what content types are included? HTML only or other content types such as PDFs and images as well?
+i:  HTML only
+
+c:  shall we consider newly added or edited web pages?
+i:  yes, we should consider they newly added or edited web pages
+
+c:  do we need to store HTML pages crawled from the web?
+i:  yers, up to 5 years
+
+c:  how do we handler web pages with duplicate content?
+i:  pages with duplicate content should be ignored
+
+```
+
+- key characteristics:
+    1. scalability: web is very large, should be extremely efficient using paralleization
+    2. robustness: web is full of traps, bad HTML, unresponsive servers, crashes, malicious links and etc. crawler must handle all those edge cases.
+    3. politness: the crawler should not make too many requests to a website within a short time interval.
+    4. extensibility: the system should be flexible, so that minial changes are needed to support new content types. if we want to crawl image files in future, we dont need redesign the entire system
+
+### back of the envelope estimation
+- assumptions
+    - assume 1 billion web pages are downloaded every month
+    - QPS: 1,000,000,000/ 30 days / 24 hours / 3600 seconds = ~ 400 pages per second
+    - peak QPS = 2 * QPS = 800
+    - assume the average web page size is 500k
+    - 1-billion-page x 500k = 500 TB storage per month. if you are unclear about digital storage units, 
+    - assuming data are stored for five years, 500 TB * 12 months * 5 years = 30 PB, a 30 PB storage is needed to store five-year content
+
+<br><br><br>
+
+## step 2 - propose high-level design and get buy-in
+
+- high-level design
+    - ![imgs](./imgs/Xnip2023-12-03_16-29-23.jpg)
+    
+
+<br>
+
+### 2.1 seed URLs
+- seed URLs as starting point for the crawl process
+    - divide entire URL space into smaller ones 
+    - based on locality
+    - choose seed URLs based on topic
+
+<br>
+
+### 2.2 URL frontier
+- split crawl state into two:
+    - to be downloaded: the component that stores URLs to be downloaded called the URL frontier
+    - already downloaded
+
+<br>
+
+### 2.3 HTML downloader
+- download web pages from internet
+
+
+<br>
+
+### 2.4 DNS resoler
+- URL must be translated into an IP address
+
+<br>
+
+### 2.5 Content parser
+- after a web page is downloaded, it must be parsed and validated because malformed web pages could provoke problems and wate storage space. 
+- as it will slow down crawling process, content parser is a separate component
+
+<br>
+
+### 2.6 content seen?
+- 29% web pages are duplicated contents, `content seen` to eliminate data redundancy and shorten processing time. 
+- this is slow, so compare the hash values of the two page pages
+
+<br>
+
+### 2.7 content storage
+- choice of storage system depends on data type, data size, access frequency, life span and etc
+    - most of the content is stored on `disk` because the data set is too big to fit in memory
+    - popular content is kept in `memory` to reduce latency
+
+<br>
+
+### 2.8 URL extractor
+- extracs links from HTML pages
+    - ![imgs](./imgs/Xnip2023-12-03_16-47-31.jpg)
+    
+
+<br>
+
+### 2.9 URL filter
+- excludes certain content types, file extensions, error links and URLs in blacklisted sites
+
+<br>
+
+### 2.10 URL seen?
+- a data structure that keeps track of URLs that are visited before or already in the frontier. help to avoid adding the same URL. 
+- Bloom filter and hash table are common techniques to implement URL seen component
+
+<br>
+
+### 2.11 URL storage
+- stores already visited URLs
+
+
+<br>
+
+### 2.12 web crawler workflow
+
+- step 1: add seed URLs to the URL frontier
+- step 2: HTML downloader fetches a list of URLs from URL frontier
+- step 3: HTML downloader gets ip addreses of URLs from DNS resolver and starts downloading
+- step 4: content parser parses HTML pages and check s if pages are malformed
+- step 5: after content is parsed and validated, it is passed to the "Content Seen?" component
+- step 6: "Content Seen" component checks if a HTML page is already in the storage
+    - if yes, same content in different URL has already been processed, in this case, HTML page is discarded
+    - if no, not processed yet, pass to link extractor
+- step 7: link extractor extracts links from HTML pages
+- step 8: extracted links are passed to url filter
+- step 9: after links are filtered, they are passed to "URL Seen?" component
+- step 10: "URL Seen?" check if URL is already in the storage
+    - if yes, nothing needs to be done
+- step 11: if not, added to URL frontier
+    - ![imgs](./imgs/Xnip2023-12-03_16-54-54.jpg)
+    
+
+
+<br><br><br>
+
+## step 3 - design deep dive
+- discuss most important components and technique in depth
+    - DFS vs BFS
+    - URL frontier
+    - HTML downloader
+    - robutsness
+    - extensibility
+    - detect and avoid problematic content
+
+<br>
+
+### 3.1 DFS vs BFS
+- DFS is usually not a good choice as depth of DFS can be very deep
+- BFS is commonly used by we crawlers via FIFO(first-in-first-out) queue. URLs are dequeued in the order they are enqueued. two problems:
+    - most links are linked back to the same host. when parallel, host will be flooded with requests, this is "impolite"
+        - ![imgs](./imgs/Xnip2023-12-03_17-03-07.jpg)
+        
+
+    - standard BFS does not take priority of a URL into consideration
+
+<br>
+
+### 3.2 URL frontier
+- URL frontier is an important component to ensure politeness, URL prioritization and freshness.
+
+<br>
+
+#### 3.2.1 Politeness
+- avoid sending too many requests to the same hosting server within a short period
+- download one page at a time. add delay between two download tasks.
+- maintain a mapping from website hostnames to download (worker) threads, each downloader thread has a separate FIFO queue. 
+    - ![imgs](./imgs/Xnip2023-12-03_17-07-56.jpg)
+    - queue router: ensure that each queue (b1, b2, ..., bn) only contains URLs from the same host
+    - mapping table: maps each host to a queue
+        - ![imgs](./imgs/Xnip2023-12-03_17-08-48.jpg)
+        
+    - FIFO queues b1, b2 to bn, each queue contains URLs from the same host
+    - Queue selector: each worker thread is mapped to FIFO queue, and it only downloads URLs from that queue. queue selection is done by queue selector
+    - worker thread 1 to N, a worker thread downloads web pages one by one from the same host. a delay can be added between two download tasks
+
+<br>
+
+#### 3.2.2 Priority
+- a random post from a discussion forum about Apple products carries very different weight than posts on th Apple home page. even though they both have the apple keyword. it is sensible for a crawler to crawl the Apple home page first
+
+- Prioritize URLs based on usefulness, measured by pagerank, website traffic, update frequency. 
+- design that manages URL priority
+    - prioritizer: it takes the URL as input and computes the priorities
+    - queue f1 to fn, each queue has an assigned priority
+    - queue selector: randomly choose a queue with a bias towards queues with higher priority
+    - ![imgs](./imgs/Xnip2023-12-03_17-12-56.jpg)
+
+- design presents URL frontier design with two modules
+    - front queues: manage prioritization
+    - back queues: manage politeness
+    - ![imgs](./imgs/Xnip2023-12-03_17-16-58.jpg)
+    
+
+<br>
+
+#### 3.2.3 freshness
+- web pages are constantly being added, deleted and edited. crawler must periodically recrawl downloaded pages to keep our data set fresh
+    - recrawl based on web pages update history
+    - prioritize URLs and recrawl important pages first and more frequently
+
+<br>
+
+#### 3.2.4 storage for URL frontier
+- the # of URLs could be hundreds of millions. putting everything in memory is neither durable nor scalable. keeping everything in disk is undesirable neither because the disk is slow.
+- hybrid approach, majority URLs are stored on disk, so the sotorage space is not a problem, to reduce the cost of reading, we maintain buffers the memory for enqueue/ dequeue operations. data in the buffer is periodically written to the disk
+
+<br><br>
+
+### 3.3 HTML downloader
+- download web pages using HTTP protocol
+
+<br>
+
+#### 3.3.1 Robots.txt
+- aka Robots Exclusion Protocol. it specifies what pages crawlers are allowed to download. before attempting to crawl a web site, crawler should check its robots.txt first and follow its rules.
+
+- to avoid repeat downloads, we cache the results of the file
+
+<br>
+
+#### 3.3.2 performance optimization
+
+<br>
+
+##### 3.3.2.1 distributed crawl
+- to achieve high performance, crawl jobs are distributed into multiple servers. each downloader is responsible for a subset of the URLs
+    - ![imgs](./imgs/Xnip2023-12-03_17-26-09.jpg)
+    
+
+<br>
+
+##### 3.3.2.2 cache DNS resolver
+- to get effective speed optimization, maintain a DNS cache. as DNS response time ranges from 10ms to 200ms.
+
+<br>
+
+##### 3.3.2.3 locality
+- ditribute crawl servers geographically, when it's closer to website hosts, crawler experience faster download time.
+
+<br>
+
+##### 3.3.2.4 short timeout
+- some web servers respond slowly or may not respond at all. to avoid long wait time, set a maximal wait time.
+
+<br><br>
+
+### 3.4 Robustness
+- import system robustness
+    - consistent hashing: helps to distribute loads among downloaders
+    - save crawl states and data: to guard against system failures. a disrupted crawl can be restarted easily by loading saved states and data
+    - exception handling: handle exceptions gracefully without crashing the system
+    - data validation: to prevent system errors
+
+<br><br>
+
+### 3.5 Extensibility
+- to make system flexible enough to support new content types
+    - PNG downloader module is plugged-in to download PNG files
+    - web monitor module is added to monitor the web and prevent copyright and trademark infringments
+    - ![imgs](./imgs/Xnip2023-12-03_17-39-20.jpg)
+
+
+<br><br>
+
+### 3.6 detect and avoid problematic content
+
+<br>
+
+#### 3.6.1 redundant content
+- nearly 30% of web pages are duplicates, hashes and checksums help to detect duplication
+
+<br>
+
+#### 3.6.2 spider traps
+- cause crawler in an infinite loop.
+- can be avoided by setting a maximal length of URL. or manually verify and identify a spider trap.
+    - exlucde those websites
+    - apply some customized URL filters
+
+<br>
+
+#### 3.6.3 data noise
+- some contents have little or no value, should be excluded
+
+<br><br><br>
+
+## step 4 wrap up
+- addtional talking points:
+    - server-side rendering: dynamic link, perform server-side rendering first before parsing a page
+    - filter out unwanted pages: add anti-spam component
+    - database replication and sharding:
+    - horizontal scaling: large scale crawler, keep servers stateless
+    - availability, consistency and reliability: chapter 1
+    - analytics: collecting and analyzing data are important
