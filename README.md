@@ -3123,31 +3123,273 @@ i:  that is great question, building everything from scratch is unrealistic. it 
 #### 3.4.3 speed optimization: parallelism everywhere
 - build loosely coupled system and enable high parallelism
     - ![imgs](./imgs/Xnip2023-12-04_01-04-23.jpg)
+- introduce msg queue 
+    - before msg queue encoding module must wait for the output of the download module
+    - after, no need to wait
+    - ![imgs](./imgs/Xnip2023-12-04_01-05-07.jpg)
     
 
 <br>
 
 #### 3.4.4 safety optimization: pre-signed upload URL
+- only verified user can upload
+    - ![imgs](./imgs/Xnip2023-12-04_01-06-01.jpg)
+    
 
 <br>
 
 #### 3.4.5 safety optimization: protect your videos
+- to protect copyrighted videos, adopt one of following:
+    - digital rights managements systems
+    - AES encryption
+    - visual watermarking
 
 <br>
 
 #### 3.4.6 cost-saving optimization
+- few optimizations:
+    1. only serve the most popular videos from CDN and other videos from our high capacity storage video servers
+        - ![imgs](./imgs/Xnip2023-12-04_01-08-50.jpg)
+        
+    2. encoded video on-demand
+    3. some videos are popular onl in certain regions, no need to distribute to other
+    4. build you own CDN like netflix and partner.
+
 
 <br><br>
 
 ### 3.5 error handling
+- two types of error
+    - recoverable error
+    - non-recoverable error
+- component error
+    - split video error
+    - transcoding error
+    - preprocessor error
+    - DAG scheduler error
+    - Resource manager queue down
+    - tasks worker down
+    - API server down
+    - metadata cache server down
+    - metadata db server down
+        - master down, promote one of slaves
+        - slave down, if a slaves goes down, use another 
 
 
 <br><br><br>
 
 ## step 4 - wrap up
+- additional pts:
+    - scale the API tier
+    - scale the db
+    - live streaming
+        - higher latency requirement
+        - lower requirement for parallelism 
+        - rquires differnt sets of erro handling
+    - video takedowns
 
 
 
 <br><br><br><br><br><br>
 
 # Chapter 15 - design google drive
+
+## step 1 - understand the problem and establish design scope
+```bash
+c:  what are the most important features?
+i:  upload and download files, file sync, and notifications
+
+c:  is this a mobile app, a web app, or both
+i:  both
+
+c:  what are the supported file formats
+i:  any file type
+
+c:  do files need to be encrypted
+i:  yes
+
+c:  is there a file size limit
+i:  yes, 10GB or smaller
+
+c:  how many user ?
+i:  10M DAY
+```
+
+- features
+    - add files
+    - download files
+    - sync files across multiple devices
+    - see file revisions
+    - share files with friends
+    - send a notification when a file is edited, deleted or shared with u
+
+- not discussed in this chapter
+    - google doc editing and collaboration
+
+- other requirements
+    - reliability
+    - fast sync speed
+    - bandwidth usage
+    - scalability
+    - high availability
+
+### back of the envelope estimation
+- 50m signed up users and 10m DAU
+- 10 GB free space
+- users upload 2 files per day, 500KB on average
+- 1:1 read to write ratio
+- total space: 50m * 10 GB = 500 PB
+- QPS for upload API: 10m * 2 uploads / 24 hours / 3600 seconds = ~ 240 
+- peak QPS = QPS * 2 = 480
+
+
+<br><br><br>
+
+## step 2 - propose high level design and get buy-in
+- build a single server first
+    - a web server to upload and download files `apache web servser`
+    - a database to keep track of metadata like user data, login info, files info `mysql db`
+    - a storage system to store files `drive/` as root directory
+    - ![imgs](./imgs/Xnip2023-12-04_01-24-49.jpg)
+
+<br><br><br>
+
+## 2.1 APIs
+
+### 2.1.1 upload a file to goole drive
+### 2.1.2 download a file from goole drive
+### 2.1.3 get file revisions
+
+<br><br><br>
+
+## 2.2 move away from single server
+- example of sharding based on user_id
+    - ![imgs](./imgs/Xnip2023-12-04_01-27-33.jpg)
+
+- in case of data loss, amazon S3 for stage (amazon simple storage service) is an object storage service 
+    - amazon s3 supports same-regions and cross-region replication
+    - ![imgs](./imgs/Xnip2023-12-04_01-29-45.jpg)
+
+
+- more areas you can improve:
+    - load balancer
+    - web servers
+    - metadata database: set up data replication and sharding to meet the availability and scalability requirements
+    - file storage: to ensure availability and durability, files are replicated across multiple data centers
+    - ![imgs](./imgs/Xnip2023-12-04_01-31-53.jpg)
+
+
+<br><br><br>
+
+## 2.3 sync conflicts
+- 1st version gets processed wins, and version that processed later receives a conflict
+    - ![imgs](./imgs/Xnip2023-12-04_01-33-02.jpg)
+
+<br><br><br>
+
+## 2.4 high-level design
+- design
+    - user
+    - block servers: split and reconstruct. each size of block to 4MB
+    - cloud storage
+    - cold storage: to store inactive data
+    - load balancer
+    - API servers
+    - metadata db: files stored in cloud, this only contains metadata
+    - metadata cache: some of metadata
+    - notification service: notify users when a file is added/ edited/ removed
+    - offline backup queue
+    - ![imgs](./imgs/Xnip2023-12-04_01-33-55.jpg)
+
+
+
+<br><br><br>
+
+
+## step 3 - design deep dive
+
+
+<br><br>
+
+
+### 3.1 block servers
+- two optimizations
+    - delta sync
+    - compression
+    - ![imgs](./imgs/Xnip2023-12-04_01-39-28.jpg)
+
+- delta sync, only modifed blocks are transfered to cloud storage
+    - ![imgs](./imgs/Xnip2023-12-04_01-40-21.jpg)
+
+
+<br><br>
+
+### 3.2 high consistency requirement
+- provide strong consistency for metadata cache and db layers
+- ensure stong consistency
+    - data in cache replicas and the master is consistent
+    - invalidate caches on db write to ensure cache and db hold the same value
+- choose relational db, as ACID is natively supported
+
+<br><br>
+
+### 3.3 metadata db
+- high simplified design
+    - ![imgs](./imgs/Xnip2023-12-04_01-42-31.jpg)
+
+
+<br><br>
+
+### 3.4 upload flow
+- upload sequence flow
+    - ![imgs](./imgs/Xnip2023-12-04_01-44-40.jpg)
+
+- two request in parallel
+    - add file metadata
+    - upload files to cloud storage
+
+<br><br>
+
+### 3.5 download flow
+- detailed download flow 
+    - ![imgs](./imgs/Xnip2023-12-04_01-46-27.jpg)
+
+
+<br><br>
+
+### 3.6 save storage space
+- reduce storage costs:
+    - de-duplicate data blocks
+    - adopt an intelligent data back strategy
+        - set a limit for # of versions to store
+        - keep valuable versions only
+    - moving infrequently used data to clod storage
+
+<br><br>
+
+### 3.2 high consistency requirement
+- load balancer failure
+- block server failure
+- cloud storage failure
+- API server failure
+- metadata cache failure
+- metadata db failure
+    - master down
+    - slack down
+- notification service failure
+- offline backup queue failure
+
+
+
+<br><br><br>
+
+## step 4 - wrap up
+- additional talking pts:
+    - upload directly to cloud instead of going through block servers
+        - 1st the same chunking, compression, encryption logic must be implemented on differnt platforms
+        - 2nd it's easy to be hacked, not ideal on client side
+    - moving online/ offline logic to separate service
+
+
+
+
