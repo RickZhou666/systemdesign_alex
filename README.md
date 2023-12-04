@@ -2243,6 +2243,7 @@ Params:
     4. action: it stores info about whether a user liked a post, replied a post or took other actions on a post
     5. counters: it stores counters for like, reply, follower, following, etc
     - ![imgs](./imgs/Xnip2023-12-03_19-55-16.jpg)
+    
 
 
 <br><br><br>
@@ -2269,3 +2270,313 @@ Params:
     - monitor key metrics.
         - QPS during peak hours 
         - latency while users refreshing their news feed
+
+
+<br><br><br><br><br><br>
+
+# Chapter 12 - design a chat system
+- it's very important to nail down the exact requirements.
+    - focus on group chat 
+    - one-on-one chat
+
+## Step 1 - Understand the problem and establish design scope
+- one-on-one chat facebook msger, wechat, whatsapp
+- group chat like slack, discord require low voice chat latency
+```bash
+c:  what kind of chat app shall we design? 1 on 1 or group based
+i:  support 1 on 1 and group chat
+
+c:  mobile app or web app or both?
+i:  both
+
+c:  what is scale of this app? a startup app or massive scale? 
+i:  50 million DAU
+
+c:  for group chat, what is the group member limit?
+i:  maximum of 100 people
+
+c:  what features are important for the chat app? can it support attachment?
+i:  1 on 1 chat, group chat, online indicator. the system only supports text msgs
+
+c:  is there msg size limit?
+i:  yes text length should be less than 100,000 characters long (100kb)
+
+c:  is end-to-end encryption required?
+i:  not required for now but we will discuss that if time allows
+
+c:  how long shall we store the chat history?
+i:  forever
+```
+
+- focus on designing a chat app like facebook messenger, with an emphasis on the following features
+    - a 1-on-1 chat with low delivery latency
+    - small group chat (max of 100 people)
+    - online presence
+    - multiple device support
+    - push notification
+
+- design scale for 50 million DAU
+
+
+<br><br><br>
+
+
+## Step 2 - Propose high-level design and get buy-in
+- clients do not communicate directly with each other. `they connect to a chat service`
+- functions:
+    - receive msgs from other clients
+    - find the right recipients for each msg and relay the msg to the recipients
+    - if a recipient is not online, hold the msgs for that recipient on the server until she is online
+
+- relationship between clients and chat service
+    - HTTP for client-initiated
+    - server-initiated connection:
+        - polling
+        - long polling
+        - websocket
+    - ![imgs](./imgs/Xnip2023-12-03_22-06-49.jpg)
+
+### 2.1 Polling
+- polling is a technique client periodically asks the server if there are msg available
+    - polling could be costly based on polling frequency
+    - ![imgs](./imgs/Xnip2023-12-03_22-11-37.jpg)
+
+<br><br>
+
+### 2.2 Long polling
+- as polling could be inefficient, next progression is long polling
+    - a client holds the connection open until there are actually new msgs avaialable or a timeout threshold has been reached. once client receives new msgs, it immediately sends another request to the server
+    - ![imgs](./imgs/Xnip2023-12-03_22-12-16.jpg)
+
+- drawbacks:
+    - sender and receiver may not connect to the same chat server. HTTP based servers are usually stateless. if round robin for load balancing, might not have long-polling connection with the client who receives the msg
+    - a server has no good way to tell if a client is diconnected
+    - it is inefficient. it a user does not chat much, long polling still makes periodic connections after timeouts
+
+<br><br>
+
+### 2.3 websocket
+- common solution for sending asynchronous updates from server to client
+    - initiated by client. it's bi-directional and persistent
+    - 80 or 443 for HTTP/ HTTPs
+    - ![imgs](./imgs/Xnip2023-12-03_22-15-33.jpg)
+
+- websockets(ws) for both sender and receiver
+    - ws connections are persistent
+    - ![imgs](./imgs/Xnip2023-12-03_22-17-08.jpg)
+
+
+
+<br><br>
+
+
+### 2.4 high level design
+- web socket as main communication protocol
+- most features (sign up, login, user profile, etc) could use traditional request/ response method over HTTP
+    - stateless services
+    - stateful services
+    - 3rd intergration
+    - ![imgs](./imgs/Xnip2023-12-03_22-18-58.jpg)
+
+#### 2.4.1 stateless services
+- manage login, signup user profile
+- sit behind a load balancer to route requests to the correct services based on the request paths
+- give client a list of DNS host names of char servers that client could connect to
+
+<br>
+
+#### 2.4.2 stateful services
+- chat service is stateful. as client maintains a persistent network connection to a char server. a client normally does not switch to another chat server as long as the server is still available
+
+
+<br>
+
+#### 2.4.3 3rd-party integration
+- push notification is the most important 3rd integration. 
+    - inform users when new msgs have arrived, even when app is not running
+
+<br>
+
+#### 2.4.4 scalability
+- on a small scale, 1M concurrent users each user connection needs 10K of memory, 10GB of memory can hold all connection on one box
+- but we cannot do that in single server
+- start with single server design then expand to multiple servers
+    - chat servers facilitate msg sending/ receving
+    - presence servers manage online/ offline status
+    - API servers handle everything including user login, signup, change profile
+    - notification servers send push notifications
+    - the key-value store is used to store chat history. when an offline user comes online, she will see all her previous chat history
+    - ![imgs](./imgs/Xnip2023-12-03_22-25-58.jpg)
+    
+
+<br>
+
+#### 2.4.5 storage
+- relational db or NoSQL db?
+- generic data, such as user profile, setting and user friends list are stored in robust and reliable relational db
+    - replication and sharding are common techniques to satisfy availability and scalability requirements
+
+- chat history data. understand the read/ write pattern
+    - amount of data is enourmous for chat systems. 60 billion msgs a day for facebook messenger and whatsapp
+    - only recent chats are accessed frequently
+    - users might use features that require random access of data, such as search, view your mentions, jump to specific messages. `data access layer`
+    - read to write ratior is about 1:1 for 1 on 1 chat apps
+
+- recommend key-value storage:
+    - key-value stores allow easy horizontal scaling
+    - key-value stores provide very low latency to access data
+    - relational db do not handle long tail of data well. when indexes grow large, random access is expensive
+    - key-value stores are adopted by other proven reliable chat applications. facebook use HBase, Discord uses Cassandra
+
+<br><br>
+
+### 2.5 data model
+
+#### 2.5.1 message table for 1 on 1 chat
+- primary key is `message_id`, helps to decide msg sequence. dont use created_at, it might created at the same time
+    - ![imgs](./imgs/Xnip2023-12-03_22-33-48.jpg)
+
+<br>
+
+#### 2.5.2 message table for group chat
+- composite primary key is (channel_id, messge_id)
+    - ![imgs](./imgs/Xnip2023-12-03_22-34-49.jpg)
+    
+
+<br>
+
+#### 2.5.3 message ID
+- message_id ensures the order of messages
+    - IDs must be unique
+    - IDs should be sortable by time, meaning new rows have higher IDs than old ones
+- approches 
+    - use 'auto_increment', but it's not supported in NoSQL
+    - global 64-bit sequence number generator. chapter 7
+
+- `use local sequence number generator`
+    - IDs are only unique within a group
+
+
+
+
+<br><br><br>
+
+## Step 3 - Design deep dive
+- chat system, service discovery, messaging flows and online/ offline indicators worth deeper exploration
+
+
+
+### 3.1 service discovery
+- recommend best chat server for a client based on geographical location, server capacity 
+    - apache zookeeper is solution for service discovery
+    - it registers all available char servers and pick best char server for a client based on predefined criteria
+
+- design
+    1. user A tries to log in to the App
+    2. load balancer sends the login requent to API servers
+    3. after backend authenticates the user, service discovery finds the best chat server for user A. return server info back to user A
+    4. user A connects to chat server 2 through websocket
+        - ![imgs](./imgs/Xnip2023-12-03_22-44-51.jpg)
+
+<br><br>
+
+### 3.2 msg flows
+
+<br>
+
+#### 3.2.1 1 on 1 chat flow
+- what happens when user A sends a msg to User B
+    1. user A sends a chat msg to chat server 1
+    2. chat server 1 obtains a msg ID from ID generator
+    3. chat server 1 sends the msg to the msg sync queue
+    4. the msg is stored in a key-value store
+    5.a if user B online, msg forwarded to chat server 2 where user b is connected
+    5.b if user B offline, push notification is sent from push notification (PN) servers
+    6. chat server 2 forwards the msg to user B. there is a persistent websocket connection between user b and chat server 2
+    - ![imgs](./imgs/Xnip2023-12-03_22-46-43.jpg)
+
+<br>
+
+#### 3.2.2 msg synchronization acrosss multiple devices
+- example of msg synchronization
+    - user A two devices connect to same server via websocket
+    - cur_max_msg_id to keep track of latest msg ID 
+    - news msgs condtions:
+        - the recipient ID is equal to the currently logged-in user ID
+        - msg ID in the key-value store is larger than cur_max_msg_id
+    - ![imgs](./imgs/Xnip2023-12-03_22-49-29.jpg)
+
+
+<br>
+
+#### 3.2.3 small group chat flow
+- flows when A sends msg in a group chat
+    - msg from user A is copied to each group member's msg sync queue
+        - it simplifies msg sync flow as each client only needs to check its own inbox to get new msgs
+        - when group number is small, storing copy in each recipient indix is not too expensive
+    - ![imgs](./imgs/Xnip2023-12-03_22-51-32.jpg)
+- wechat limits group to 500 members. 
+- but for groups with a lot of users, storing msgs copy each is not acceptable
+- recipient side, receive msgs from multiple users
+    - ![imgs](./imgs/Xnip2023-12-03_22-54-14.jpg)
+
+<br><br>
+
+### 3.3 online presence
+- green dot next to a user's profile.
+
+<br>
+
+#### 3.3.1 user login
+- after websocket connection is built user A's online status and last_active_at timestamp are saved in the KV store. presenece indicator shows the user is online after she logs in
+    - ![imgs](./imgs/Xnip2023-12-03_23-04-23.jpg)
+
+
+<br>
+
+#### 3.3.2 user logout
+- online status is changed to offline in the KV store, the presence indicator shows user is offline
+    - ![imgs](./imgs/Xnip2023-12-03_23-05-12.jpg)
+
+
+<br>
+
+#### 3.3.3 user disconnection
+- updating disconnect/ reconnect would make presence indicator change too often.
+- heartbeat mechanism to solve this problem, periodically, online client sends a heartbeat event to presence servers.
+- every 5 seconds
+    - ![imgs](./imgs/Xnip2023-12-03_23-07-18.jpg)
+
+<br>
+
+#### 3.3.4 online status fanout
+- how user A friends know about status changes
+    - presence servers use a publish-subscribe model
+        - when A is active, publishes event to three channels
+    - ![imgs](./imgs/Xnip2023-12-03_23-07-51.jpg)
+
+- when group has 100,000 members, fetch online status only when a user enters a group or manually refreshes the friend list
+
+
+## Step 4 - Wrap up
+- additional talking points:
+    - extend the chat app to support media files such as photos and videos.
+    - end-to-end encryption
+    - `caching msgs on the client-side` is effective to reduce the data transfer between client and server
+    - improve load time. slack built a geographically distributed network to cache user's data
+    - error handling
+        - the chat server error
+        - msg resent mechanism. retry and queueing
+
+
+<br><br><br><br><br><br>
+
+# Chapter 13 - design a search autocomplete system
+
+<br><br><br><br><br><br>
+
+# Chapter 14 - design youtube
+
+<br><br><br><br><br><br>
+
+# Chapter 15 - design google drive
