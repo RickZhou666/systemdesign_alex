@@ -2043,3 +2043,229 @@ opt_in  boolean     # opt-in to receive notification
 <br><br><br>
 
 ## Step 4 - wrap up
+- we dug deep into more components and optimization
+    - reliability: propose a robust retry mechanism
+    - security: appKey/ appSecret is used to ensure only verified clients
+    - tracking and monitoring: capture important stats
+    - respect user settings: check user settings
+    - rate limiting: user will appreciate a frequency capping on the number of notifications they receive
+
+<br><br><br><br><br><br>
+
+# Chapter 11: design a news feed system
+- news feed is the constantly updating list of stories in the middle of your home page
+    - ![imgs](./imgs/Xnip2023-12-03_18-51-51.jpg)
+    
+
+## Step 1 - Understand the problem and establish design scope
+```bash
+c:  is this a mobile app? or a web app? or both?
+i:  both
+
+c:  what are the important features?
+i:  a user can publish a post and see her friends' posts on the news feed page
+
+c:  is the news feed sorted by reverse chronological order or any particular order such as topic scores? for instance, posts from your close friends have higher scores
+i:  to keep things simple, let us assume the feed is sorted by reverse chronological order
+
+c:  how many friends can a user have?
+i:  5,000
+
+c:  what is the traffic volume
+i:  10 million DAU (daily active users)
+
+c:  can feed contain images, videos, or just text?
+i:  it can contain media files, including both images and videos
+
+```
+
+<br><br>
+
+## Step 2 - Propose high-level design and get buy-in
+- two flows: feed publishing and news feed building
+    - feed publishing: when a user publishes a post, corresponding data is written into cache and db, a post is populated to her friends' news feeds
+    - newsfeed building: for simplicity, let use assume news feed is built by aggregating friends' posts in reverse chronological order
+
+
+## 2.1 newfeed APIs
+- news feed APIs are primary ways for clients to communicate with servers
+    - posting a status
+    - retrieving news feed
+    - adding friends, etc
+
+<br>
+
+### 2.1.1 Feed publishing API
+- publish a post, a HTTP POST request will be sent to the server
+```bash
+POST /v1/me/feed
+params:
+    - content: content is the text of the post
+    - auth_token: it is used to authenticate API requrest
+
+```
+
+
+<br>
+
+### 2.1.2 Feed retrieval API
+- to retrieve news feed 
+```bash
+GET /v1/me/feed
+Params:
+    - auth_token: it is used to authenticate API requests
+```
+
+<br><br>
+
+## 2.2 Feed publishing
+- design
+    - user: a user can view news feeds on a browser or mobile app
+        - a user make a post with content 'hello' through API
+        ```bash
+        /v1/me/feed?content=Hello&auth_token={auth_token}
+        ```
+    - load balancer: distribute traffic to web servers
+    - web servers: web servers redirect traffic to different internal services
+    - post service: persist post in the db and cache 
+    - fanout service: push new content to friends' news feed, newsfeed data is stored in the cache for fast retrieval
+    - notification service: inform friends that new content is available and send out push notifications
+    - ![imgs](./imgs/Xnip2023-12-03_19-29-52.jpg)
+
+<br><br>
+
+## 2.3 newsfeed building
+- design
+    - user: a user sends a request to retrieve her news feed. the request looks like below:
+    ```bash
+    /v1/me/feed
+    ```
+    - load balancer: redirects traffic to web servers
+    - web servers: route requests to newsfeed service
+    - newsfeed service: fetches news feed from the cache
+    - newsfeed cache: store news feed IDs needed to render the news feed
+    - ![imgs](./imgs/Xnip2023-12-03_19-33-46.jpg)
+
+
+<br><br><br>
+
+## Step 3 - Design deep dive
+- hld briefly covered two flows:
+    - feed publishing
+    - news feed building
+
+<br><br>
+
+### 3.1 Feed publishing deep dive
+- detailed design
+    - ![imgs](./imgs/Xnip2023-12-03_19-37-14.jpg)
+    
+
+#### 3.1.1 web servers
+- web servers enforce authentication and rate-limiting
+- ony user signed in with valid auth_token are allowed to make posts
+- the system limits the # of posts a user can make within a certain period
+
+<br>
+
+#### 3.1.2 fanout service
+- the process of delivering a post to all friends. 
+    - fanout on write: push model
+    - fanout on read: pull model
+
+<br>
+
+#### 3.1.3 fanout on write
+- a new post is delivered to friends' cache immediately after it is published
+- Pros
+    - news feed is generated in real-time and can be pushed to friends immediately
+    - fetching news feed is fast as the news feed is pre-computed during write time
+- Cons
+    - is a user has many friends, fetching the friend list and generating news feeds for all are slow and time comsuming. it's `hotkey` problem
+    - for inactive users or those rarely log in, pre-computing news feeds wate computing resources
+
+<br>
+
+#### 3.1.4 fanout on read
+- on-demand model, recent posts are pulled when a user loads her home page
+- Pros
+    - for inactive users fanout on read works better
+    - data is not pushed to friends so there is no hotkey problem
+- Cons
+    - fetching the news feed is slow as the news feed is not pre-computed
+
+
+#### 3.1.5 implementation
+
+- we adopt hybrid approach
+    - push model for majority of users
+    - for celebrities or users who have many friends/ followers, we let followers pull news content on-demand to avoid system overload
+    - consistent hashing is useful technique to mitigate the hotkey problem
+    - ![imgs](./imgs/Xnip2023-12-03_19-46-29.jpg)
+
+- fanout service workflow:
+    1. fetch friend IDs from graph database. graph databases are suited for managing friend relationship and friend recommendation
+    2. get friends info from the user cache. 
+        - if u mute someone, her posts wont show up
+        - a user could selectively share info with specific friends
+    3. send friends list and new post id to the msg queue
+    4. fanout workers fetch data from msg queue and store news feed data in the news feed cache
+        - only IDs are stored, to keep memory size small
+        - most users are only interested in latest content, so the cache miss rate is low
+    5. store <post_id, user_id> in news feed cache
+    - ![imgs](./imgs/Xnip2023-12-03_19-50-14.jpg)
+
+
+<br><br>
+
+### 3.2 newsfeed retrieval deep dive 
+- design
+    - media content are stored in CDN for fast retrieval
+    1. a user sends a request to retrieve her news feed
+    2. the load balancer redistributes requests to web servers
+    3. web servers call the news feed service to fetch news feeds
+    4. news feed service gets a list post IDs from the news feed cache
+    5. a user news feed is more than just a list of feed IDs. 
+        - username
+        - profile picture
+        - post content
+        - post image
+    6. the fully hydrated news feed is returned in JSON format back to client for rendering
+    - ![imgs](./imgs/Xnip2023-12-03_19-51-38.jpg)
+
+<br><br>
+
+### 3.3 cache architecture
+- cache is extremely important for a news feed system. we divide cache tier into 5 layers
+    1. news feed: it stores IDs of news feeds
+    2. content: it stores every post data, popular content is stored in hot cache
+    3. social graph: it stores user relationship data
+    4. action: it stores info about whether a user liked a post, replied a post or took other actions on a post
+    5. counters: it stores counters for like, reply, follower, following, etc
+    - ![imgs](./imgs/Xnip2023-12-03_19-55-16.jpg)
+
+
+<br><br><br>
+
+## Step 4 - Wrap up
+
+- two flows:
+    - feed publishing
+    - news feed retrieval
+
+- scaling the db:
+    - vertical scaling vs horizontal scaling
+    - SQL vs NoSQL
+    - master-slave replication
+    - read replicas
+    - consistency models
+    - db sharding
+
+- other talking points:
+    - keep web tier stateless
+    - cache data as much as you can
+    - support multiple dc
+    - lose couple components with msg queues
+    - monitor key metrics.
+        - QPS during peak hours 
+        - latency while users refreshing their news feed
