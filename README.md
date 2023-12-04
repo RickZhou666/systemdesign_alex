@@ -2572,10 +2572,581 @@ i:  forever
 <br><br><br><br><br><br>
 
 # Chapter 13 - design a search autocomplete system
+- when you type in google, one or more matches presented to you
+- design top k/ design top k most serached queries
+    - ![imgs](./imgs/Xnip2023-12-03_23-18-59.jpg)
+    
+
+## step 1 - understand the problem and establish design scope
+
+```bash
+c:   is the matching only supported at the beginning of a search query or in the middle as well
+i:  only at the beginning of a search query
+
+c:  how many autocomplete suggestions should the system return?
+i:  5
+
+c:  how does system know which 5 suggestion to return?
+i:  this is determined by popularity, decided by the historical query frequency
+
+c:  does the system support spell check?
+i:  no, spell check or autocorrect is not supported
+
+c:  are search queries in english?
+i:  yes, it time allows, we can discuss multi-language support
+
+c:  do we allow capitcalization and special characters?
+i:  no, we assume all search queries have lowercase alphbetic characters
+
+c:  how many users use the product?
+i:  10 million DAU
+```
+
+<br><br>
+
+### 1.1 requirements
+    - fast response time: suggestions must show up fast enough. facebook 100ms
+    - relevant: should be relevant to search term
+    - sorted: sorted by popularity or other ranking models
+    - scalable: system can handle high traffic volume
+    - highly available: system should remain available and accessible when part of system is offline, slows down, or experience unexpected network errors
+
+<br><br>
+
+### 1.2 back of envelope estimation
+- 10 million DAY
+- average person performs 10 searches per day
+- 20 bytes of data per query string
+    - ASCII encoding. 1 character = 1 byte
+    - query contain 4 words, each word 5 characters on average
+    - 4 x 5 = 20 bytes per query
+- for every character entered into the search box, a client sends a request to backend for autocomplete suggestions. 20 requests are sent for each search query
+    - dinner
+        - search?q=d
+        - search?q=di
+        - search?q=din
+        - search?q=dinn
+        - search?q=dinne
+        - search?q=dinner
+- ~24,000 query per second(QPS) = 10,000,000 users * 10 queries per day * 20 characters / 24 hours / 3600 seconds
+- peak QPS = QPS * 2 = ~48,000
+- assume 20% of the daily queries are new. 10 million * 10 queries per day * 20 byte per query * 20% = 0.4GB. 0.4 GB of new data is added to storage daily
+
+
+<br><br><br>
+
+## step 2 - propose high-level design and get buy-in
+- system is broken down into two:
+    - data gathering service
+        - it gathers user input queries and aggregates them in real-time
+    - query service
+        - given a search query or prefix, return 5 most frequently searched terms
+
+<br><br>
+
+### 2.1 data gathering service
+- frequency table 
+    - ![imgs](./imgs/Xnip2023-12-03_23-34-30.jpg)
+
+<br><br>
+
+### 2.2 query service
+- two fields for frequency table
+    - query
+    - frequency
+    - ![imgs](./imgs/Xnip2023-12-03_23-35-21.jpg)
+
+- when user type "tw", following 5 serached queries are displayed
+    - ![imgs](./imgs/Xnip2023-12-03_23-35-51.jpg)
+    
+
+- get top 5 frequently searched queries, execute SQL query:
+    - when data is small, this is ok
+    - when it's large, accessing the db will be bottleneck
+```sql
+SELECT *
+FROM  frequency_table
+WHERE query LIKE `prefix%`
+ORDER BY frequency DESC
+LIMIT 5
+```
+
+
+<br><br><br>
+
+## step 3 - design deep dive
+- components and optimizations
+    - Trie data structure
+    - data gathering service
+    - query service
+    - scale the storage
+    - trie operations
+
+
+<br><br>
+
+### 3.1 Trie data structure
+- prefix tree is in operation.
+- pronouced `try` comes from re`trie`val
+    - tree-like data structure
+    - root represents an empty string
+    - each ndoe stores a character and has 26 children
+    - each tree node represents a single word or a prefix string
+    - ![imgs](./imgs/Xnip2023-12-03_23-40-32.jpg)
+
+- after adding frequency to nodes 
+    - ![imgs](./imgs/Xnip2023-12-03_23-41-10.jpg)
+    
+
+
+- how does autocomplete work?
+    - p - length of prefix
+    - n - total number of nodes in a trie
+    - c - number of children of given node
+
+- steps to get top k most searched queries are listed below
+    1. find the prefix `O(p)`
+    2. traverse the subtree from the prefix node to get all valid children. a child is valid if it can form a valid query string `O(c)`
+    3. sort children and get top k `O(clogc)`
+
+- example to explain the algorithm
+    - step 1: find the prefix node "tr"
+    - step 2: traverse the subtree to get all valid children
+    - step 3: sort the children and get top 2
+    - time complexity: `O(p) + O(c) + O(clogc)`
+    - ![imgs](./imgs/Xnip2023-12-03_23-43-37.jpg)
+
+- too slow:
+    - limit the max length of prefix
+    - cache top search queries at each node, but very fast
+    
+
+<br>
+
+#### 3.1.1 limit the max length of prefix
+- users rarely type long query, if p is a small integer. the time complexity reduced from O(p) -> O(1)
+
+<br>
+
+#### 3.1.2 cache top search queries at each node
+- cache 5 search queries
+- require a lot of space t store top queries at every node
+
+
+- revisite time complexity:
+    - find the prefix node O(1)
+    - return top k O(1)
+    - final O(1)
+- ![imgs](./imgs/Xnip2023-12-03_23-47-58.jpg)
+
+<br><br>
+
+### 3.2 data gathering service
+- it's not practical in real world
+    - users may enter billions of queries per day, updating the trie on every query siginificantly slows down
+    - top suggestions may not change much once the trie is built
+- google keywords might not change much on a daily basis
+- design of data gathering service
+    - ![imgs](./imgs/Xnip2023-12-03_23-51-52.jpg)
+
+1. analytics logs: 
+    - store raw serach queries  
+    - ![imgs](./imgs/Xnip2023-12-03_23-52-29.jpg)
+
+2. aggregators
+    - size of analytics logs is usually very large, and not in right format
+    - aggregate data differently
+        - for real-time app twitter, we aggregate data in a shorter time interval
+        - less frequently, once per week, 
+
+3. aggregated data
+    - weekly data
+    - ![imgs](./imgs/Xnip2023-12-03_23-54-13.jpg)
+
+4. workers
+    - perform asynchronous jobs at regular intervals. they build trie data and store it in trie db
+
+5. trie cache
+    - distributed cache system that keeps trie in memory for fast read. takes a weekly snapshot of the db
+
+6. trie db
+    - two options
+        1. document store
+            - new trie is built weekly. store the serialized data in the db. MongoDB good fits for serialized data
+        2. key-value store
+            - hash table form
+                - every prefix in the trie is mapped to a key in a hash table
+                - data on each trie ndoe is mapped to a value in a hash table
+            - ![imgs](./imgs/Xnip2023-12-03_23-56-47.jpg)
+
+
+
+
+<br><br>
+
+### 3.3 query service
+- improved design 
+    1. a search query is sent to load balancer
+    2. load balancer routes the request to API servers
+    3. API servers get trie data from Trie cache and construct autocomplete suggestions
+    4. in case not in cache, we replenish data back to the cache
+    - ![imgs](./imgs/Xnip2023-12-03_23-57-21.jpg)
+
+- query service require ligtning-fast speed
+    - AJAX request
+        - browsers usually send AJAX requests to fetch autocomplete results. doesnot refresh whole web page
+    - Browser caching
+        - save in browser cache google search engine
+        - max-age=3600, aka `1 hour`
+        - ![imgs](./imgs/Xnip2023-12-04_00-00-05.jpg)
+        
+    - data sampling
+        - for large-scale system, only 1 out of every N requests is logged by the system
+
+<br><br>
+
+### 3.4 trie operations
+
+<br>
+
+#### 3.4.1 create
+- trie is created by workers using aggregated data 
+
+<br>
+
+#### 3.4.2 update
+- two ways to update
+    1. update the trie weekly. once new created, replace old one
+    2. update individial trie node directly
+        - try to avoid, as it's slow.
+        - ancestor all the way up must be updated
+        - ![imgs](./imgs/Xnip2023-12-04_00-03-51.jpg)
+
+<br>
+
+#### 3.4.2 delete
+- remove hateful, violent, sexually explicit or dangerous autocomplete suggestions
+- add a filter layer in front of trie cache  to filter out unwanted suggestions
+- unwanted suggestions are removed physically from db asynchronically
+    - ![imgs](./imgs/Xnip2023-12-04_00-05-04.jpg)
+
+
+<br><br>
+
+### 3.5 scale the storage
+- navie way to shard based on first character
+    - a -> m on first server, n -> z on second server
+    - if 3 servers, split into a to i, j to r, s to z
+- we can split into 25 servers, follow this attempt we can shard on 2nd or 3rd level
+- but if more words start with 'c' than 'x', this creates uneven distribution
+    - analyze historical data distribution pattern and apply smarter shading logic
+    - is 's' is size of reset comined, we can maintain two shards: one for 's', one for others
+    - ![imgs](./imgs/Xnip2023-12-04_00-09-14.jpg)
+    
+
+<br><br><br>
+
+## step 4 - wrap up
+- how do you extend your desisng to support multiple languages?
+    - store unicode characters in trie nodes
+- what is top search queries in one country are differnt from others?
+    - build different trie for different countries. store tries in CDNs
+- how can we support trending(real-time) search queries?
+    - orginal not working
+        - offline workers are not scheduled to update trie yet
+        - even if it is scheduled, it takes to long to build the trie
+- build real-time autocomplete is complicated:
+    - reduce the working data set by sharding
+    - change the ranking model and assign more weight to recent search queries
+    - data may comes as streams, so we do not have access to all data at once.
+
 
 <br><br><br><br><br><br>
 
 # Chapter 14 - design youtube
+- fun facts of youtube
+    - total # of monthly active user: 2 billion
+    - the # of videos watched per day: 5 billion
+    - 73% of US adults use Youtube
+    - 50 million creators on youtube
+    - youtbe Ad revenue was $15.1 billion for the full year 2019, up 36% from 2018
+    - youtube is responsible for 37% of mobile internet traffic
+    - youtube is available in 80 different languages
+
+<br><br><br>
+
+## step 1 - understand the problem and establish design scope
+```bash
+c:  what features are important?
+i:  ability to upload a video and watch a video
+
+c:  what clients do we need to support?
+i:  mobile apps, web browsers, and smart tv
+
+c:  how many DAU we have?
+i:  5 million
+
+c:  what is average daily time spent on the product?
+i:  30 minutes
+
+c:  do we need to support international users
+i:  yes, a large percentage of users are intertional users
+
+c:  what are the supported video resolutios?
+i:  accepts most of the video resolutions and formats
+
+c:  is encrupted required?
+i:  yes
+
+c:  any file size requirement for videos?
+i:  small and medium-sized videos, maximum 1GB
+
+c:  can we leverage some of existing cloud infrastructure provided by Amazon google or microsoft?
+i:  that is great question, building everything from scratch is unrealistic. it is recommended to leverage some of the existing cloud services
+```
+
+- following features
+    - ability to upload video fast
+    - smooth video streaming
+    - ability to change video quality
+    - low infrastureture cost
+    - high availability, scalability and reliability requirements
+    - clients supported: mobile apps, web browser, smart TV
+
+
+### 1.1 back of the envelope estimation
+- assume the product has 5 million DAU
+- uesrs watch 5 video per day
+- 10% of users upload 1 video per day
+- average size is 300 MB
+- daily storage: 5 million * 10% * 300MB = 150 TB
+- CDN cost
+    - when cloud CDN serves a video, you are charged
+    - use Amazon CDN cloudfront for cost estimation
+        - 100% of traffic, $0.02 per GB
+        - 5 million * 5 videos * 0.3 GB * $0.02 = $150,000 per day
+    - CDN cost is huge
+        - ![imgs](./imgs/Xnip2023-12-04_00-24-58.jpg)
+        
+
+
+<br><br><br>
+
+## step 2 - propose high-level design and get buy-in
+- why not building everything by ourselves?
+    - choosing the right tech to do a job right is more important than explaining how the tech works in detail
+    - building scalable blob storage or CDN is extremely complex and costly
+        - netflix use amazon cloud service
+        - facebook user akamai's cdn
+- at high level 3 components
+    1. client: watch youtube on your computer, mobile phone, smartTV
+    2. CDN: videos are stored in CDN, when you press play, a video is streamed from CDN
+    3. API servers everything else excpt video streaming
+        - types:
+            - free recommendataion
+            - generating video upload URL
+            - updating metadata db and cache
+            - user signup
+        - interviewer interests
+            - video uploading flow
+            - video streaming flow
+    - ![imgs](./imgs/Xnip2023-12-04_00-27-18.jpg)
+
+<br><br>
+
+### 2.1 video uploading flow
+- design
+    1. user: a user watches youtube on devices
+    2. load balancer: evenly distribute requests among API servers
+    3. API servers: all user request go through API servers except video streaming
+    4. metadata db, video metadata are stored in metadata db. it is sharded and replicated to meet performance and high availability requirements
+    5. metadata cache: for better performance. video metadata and user objects are cached
+    6. original storage: a blob(binary large object ) stored original videos
+    7. transcoding servers: video transcoding aka video encoding. 
+    8. transcoded storage: it is a blob storage that stores transcoded video files
+    9. CDN: videos are cached in CDN
+    10. completion queue: msg queue that stores info about video transcoding completion events
+    11. completion handler: this consists of a list of workers that pull event data from the completion queue and update metadate cache and database
+    - ![imgs](./imgs/Xnip2023-12-04_00-30-30.jpg)
+
+
+<br>
+
+#### 2.1.1 flow a: upload the actual video
+- flow
+    1. videos are uploaded to the original storage
+    2. transcoding servers fetch videos from original storage and start transcoding
+    3. once transcoding is complete
+        - 3a transcoded videos are sent to transcoded storage
+        - 3b transcoding completion events are queued in the completion queue
+    - 3a.1 transcoded videos are distributed to CDN
+    - 3b.1 completion handler contains a bunch of workers tht continuoutsly pull event data from the queue
+    - 3b.1.a and 3b.1.b completion handler updates the metadata database and cache when video transcoding is compelte
+    - 4. API servers inform the client that video is successfully uploaded
+    - ![imgs](./imgs/Xnip2023-12-04_00-35-59.jpg)
+
+<br>
+
+#### 2.1.2 flow b: update video metadata
+- once uploaded
+    - client in parallel sends a request to update the video metadata 
+        - video metadata
+            - file name
+            - size
+            - format
+            - etc 
+    - ![imgs](./imgs/Xnip2023-12-04_00-39-34.jpg)
+    
+
+<br><br>
+
+### 2.2 video streaming flow
+
+- streaming means your device continuously receives video streams from remote source videos
+    - your client loads a little bit of data at a time, then you can watch videos immediately and continuously
+- streaming protocol
+    - MPEG-DASH
+    - Apple HLS
+    - Microsoft smooth streaming
+    - Adobe HTTP dynamic streaming (HDS)
+
+- differnt protocol support differnt video encoding and playback players
+- video is streamed from CDN directly. little latency
+    - ![imgs](./imgs/Xnip2023-12-04_00-43-08.jpg)
+    
+
+<br><br><br>
+
+## step 3 - design deep dive
+- two parts:
+    - video uploading flow
+    - video streaming flow
+
+<br><br>
+
+### 3.1 video transcoding
+- video transcoding is imporatant
+    - raw video consumes large amounts of storage space
+    - many devices and browsers only support certain types of video formats
+    - to ensure users watch high-quality videos whil maintaing smoon playback
+    - network conditions can change, switching video quality automatically
+- many types of encoding formats are avaiable
+    - container
+    - codecs: compression and decompression algo to reduce video size
+
+<br><br>
+
+### 3.2 directed acyclic graph (DAG) model
+- adopt DAG model to achieve flexibility and parallelism
+    1. inspection
+    2. video encoding
+    3. thumbnail
+    4. watermark
+    - ![imgs](./imgs/Xnip2023-12-04_00-49-18.jpg)
+    - ![imgs](./imgs/Xnip2023-12-04_00-50-05.jpg)
+
+
+<br><br>
+
+### 3.3 video transcoding architecture
+- proposed video transcoding architecture that leverages the cloud services
+    - ![imgs](./imgs/Xnip2023-12-04_00-50-45.jpg)
+
+
+#### 3.3.1 preprocessor
+- 4 reponsibility
+    1. video splitting
+    2. split videos by GOP(group of pictures) alignment for old clients
+    3. DGA generation
+    4. cache data
+
+<br>
+
+#### 3.3.2 DAG schduler
+- splits a DAG graph into stages of tasks
+    - ![imgs](./imgs/Xnip2023-12-04_00-54-26.jpg)
+
+<br>
+
+#### 3.3.3 resource manager
+- managing the efficiency of resource allocation
+    - taks queue
+    - worker queue
+    - running queue
+    - task scheduler
+    - ![imgs](./imgs/Xnip2023-12-04_00-55-39.jpg)
+
+- resource manager work flow:
+
+
+
+<br>
+
+#### 3.3.4 task workers
+- run the tasks which are defined in the DAG
+    - ![imgs](./imgs/Xnip2023-12-04_00-57-27.jpg)
+    
+
+<br>
+
+#### 3.3.5 temporary storage
+- caching metadata in memory 
+- video or audio in blob storage 
+
+<br>
+
+#### 3.3.6 encoded video
+- final output of the encoding pipeline
+
+<br><br>
+
+### 3.4 system optimizations
+
+<br>
+
+#### 3.4.1 speed optimization: parallelize video uploading
+- split into smaller chunks by GOP alignment 
+    - ![imgs](./imgs/Xnip2023-12-04_01-01-16.jpg)
+    
+- allows fast resumable uploads when the previous upload failed
+    - ![imgs](./imgs/Xnip2023-12-04_01-02-39.jpg)
+
+<br>
+
+#### 3.4.2 speed optimization: place upload centers close to users
+- set multiple upload centeres across the globe
+- use CDN as upload centers
+    - ![imgs](./imgs/Xnip2023-12-04_01-03-11.jpg)
+
+<br>
+
+#### 3.4.3 speed optimization: parallelism everywhere
+- build loosely coupled system and enable high parallelism
+    - ![imgs](./imgs/Xnip2023-12-04_01-04-23.jpg)
+    
+
+<br>
+
+#### 3.4.4 safety optimization: pre-signed upload URL
+
+<br>
+
+#### 3.4.5 safety optimization: protect your videos
+
+<br>
+
+#### 3.4.6 cost-saving optimization
+
+<br><br>
+
+### 3.5 error handling
+
+
+<br><br><br>
+
+## step 4 - wrap up
+
+
 
 <br><br><br><br><br><br>
 
